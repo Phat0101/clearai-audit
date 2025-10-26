@@ -1,0 +1,37 @@
+# Railway Environment Variables Template
+# Copy these to your Railway service settings
+
+# ============================================
+# BACKEND SERVICE VARIABLES
+# ============================================
+
+# Required
+GOOGLE_API_KEY=your_gemini_api_key_here
+AUTH_TOKEN=your_secure_random_token_here
+
+# Optional - adjust as needed
+DEBUG=false
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_MAX_REQUESTS=100
+RATE_LIMIT_WINDOW_SECONDS=60
+OUTPUT_DIRECTORY=/app/output
+PYTHONUNBUFFERED=1
+
+# ============================================
+# FRONTEND SERVICE VARIABLES
+# ============================================
+
+# Required - Update after backend is deployed
+NEXT_PUBLIC_API_URL=https://your-backend-service.up.railway.app
+API_URL=http://backend.railway.internal:8000
+
+# Node environment (set automatically by Railway)
+NODE_ENV=production
+
+# ============================================
+# NOTES
+# ============================================
+# 1. Replace 'your_gemini_api_key_here' with your actual Google Gemini API key
+# 2. Replace 'your_secure_random_token_here' with a secure random string
+# 3. After deploying backend, copy its Railway URL to NEXT_PUBLIC_API_URL
+# 4. The API_URL uses Railway's internal networking for server-side requests

@@ -1,0 +1,44 @@
+,NZ DHL auditing,Questions to ask,Comments,HAWB,CIV,PKL,"COO
+(if provided)","Entry print/
+Customs certificate",AI Classifier,Concession on NZ customs website,master list for supplier code
+1,HAWB,what details shall be audited?,"shipper, importer, weights, pacakge, port of origin",,,,,,,,
+2,Entry type,what details shall be audited? Simplified VS normal?,"<1000NZD, simplified entry.
+>1000NZD, Normal entry",,x,,,x,,,
+3,Import/Export,what details shall be audited?,is this an import?,,,,,x,,,
+4,Entry Number,what details shall be audited as this is auto generated?,auto generated,,,,,x,,,
+5,Entry Date,what details shall be audited as this is auto generated?,,,,,,x,,,
+6,Client code / Importers Indentity - Import Entry,,"can only check consistent across documents
+(client code is private)",x,x,x,x,x,,,
+7,Client code / Exporters Indentity - Exports Entry,Are we also auditing export?,"can only check consistent across documents
+(client code is private)",,,,,,,,
+8,Supplier code/ Suppliers Identity,,"can only check consistent across documents
+, supplier code can be checked - refer to master file download--->
+check supplier on HAWB and CIV, if different then we check if seller on the CIV is from anther party",x,x,x,,x,,,https://www.customs.govt.nz/business/import/lodge-your-import-entry/supplier-codes-and-names 
+9,Invoice Number  ,,exact match,,x,,,x,,,
+10,VFD  - Value for Duty,,,,x,,,x,,,
+11,Currency  ,,,,x,,,x,,,
+12,Incoterm  ,,,,x,,,x,,,
+13,"If freight inclusive incoterm and no freight on invoice, is freight zero","do they want us to flag the shipment when freight is zero?
+Ok to declare freight as zero if unknown",,,,,,,,,
+14,Freight,"We need freight schedule/rate card (when no freight specified)
+","if freight amount specifified, check againest CIV and entry print",,x,,,x,,,
+15,N/A for Exports Entry,Are we also auditing export?,,,,,,,,,
+16,HS / Tariff Classification   ,,discussed it during last meeting,,x,,,x,x,,
+17,Concession Code,,require manual checking (rarely match with description on the invoice),,,,,,x,x,
+18,"Description (actual goods, not description linked with HS Code)",,check if description on the entry print match with description on the invoice,,x,,,x,,,
+19,Stats Quantity ,,"when tariff requires it, check againest all paperwork to locate suitable quantity type, 
+check compare with details on entry print",,x,x,,x,x,,
+20,Country of Origin  ,,,,x,,x,x,,,
+21,Preference claimed,,"if we were provided with COO document, then this with entry print
+if no COO provided, but details on invoice shows: made in AU, then check that againest entry print",,,,x,x,,,
+22,Country of Export ,,,x,,,,x,,,
+23,Last Load Port Air/Sea ,does this information available on HAWB?,,x,,,,x,,,
+24,Origin Port of load,,,x,,,,x,,,
+25,Relationship Indicator   Yes/No?,there are Y/R/N - do they want all 3 types to be checked or just Y/N?,"R= related, def has no price benefit
+Y= related, but may have/def has price benefit",,x,,,x,,,
+26,Weight of goods,,,x,,x,,x,,,
+27,Number of packages,,,x,x,x,,x,,,
+28,Core value vs. repair value (where applicable) ,,,,x,,,x,,,
+29,"CGO (for Exports, where applicable)",Please clarify what this is？ Seem to be related to exports,,,,,,,,,
+30,Permit Code or Prohibited Code,,"if new or used, check againest commercial invoice first.
+Does entry line have prohibited code? If yes, is the code suitable for the goods (AI to check) ",,x,,,x,x,,

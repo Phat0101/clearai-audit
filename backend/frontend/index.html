@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clear AI Tariff Classifier</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f8f9fa;
+            min-height: 100vh;
+            padding: 15px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 25px;
+            text-align: center;
+            border-bottom: 3px solid #34495e;
+        }
+
+        .header h1 {
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .header p {
+            font-size: 0.95rem;
+            opacity: 0.9;
+        }
+
+        .upload-section {
+            padding: 25px;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .upload-area {
+            border: 2px dashed #ced4da;
+            border-radius: 6px;
+            padding: 25px;
+            margin: 15px 0;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            background: #f8f9fa;
+            text-align: center;
+        }
+
+        .upload-area:hover {
+            border-color: #6c757d;
+            background: #e9ecef;
+        }
+
+        .upload-area.dragover {
+            border-color: #495057;
+            background: #e9ecef;
+        }
+
+        .upload-text {
+            font-size: 1rem;
+            color: #495057;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .upload-subtext {
+            color: #6c757d;
+            font-size: 0.85rem;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .btn {
+            background: #495057;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+            font-weight: 500;
+            margin: 0 5px;
+        }
+
+        .btn:hover {
+            background: #343a40;
+        }
+
+        .btn:disabled {
+            background: #adb5bd;
+            cursor: not-allowed;
+        }
+
+        .btn.primary {
+            background: #007bff;
+        }
+
+        .btn.primary:hover {
+            background: #0056b3;
+        }
+
+        .status {
+            margin: 15px 0;
+            padding: 12px;
+            border-radius: 4px;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+
+        .status.loading {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .results-section {
+            padding: 25px;
+            display: none;
+        }
+
+        .results-summary {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 4px;
+            margin-bottom: 25px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 20px;
+            border: 1px solid #dee2e6;
+        }
+
+        .summary-item {
+            text-align: center;
+        }
+
+        .summary-number {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #495057;
+            display: block;
+        }
+
+        .summary-label {
+            color: #6c757d;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .results-table {
+            background: white;
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid #dee2e6;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        th {
+            background: #495057;
+            color: white;
+            padding: 10px 8px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #dee2e6;
+            vertical-align: top;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .item-id {
+            font-weight: 600;
+            color: #495057;
+            min-width: 50px;
+        }
+
+        .description {
+            max-width: 250px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .code {
+            font-family: 'Monaco', 'Consolas', monospace;
+            background: #f1f3f4;
+            padding: 3px 6px;
+            border-radius: 3px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .time-badge {
+            background: #e9ecef;
+            color: #495057;
+            padding: 3px 6px;
+            border-radius: 3px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            min-width: 50px;
+            text-align: center;
+        }
+
+        .supplier-badge {
+            background: #e7f5ff;
+            color: #0b7285;
+            border: 1px solid #cfe8f3;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            display: inline-block;
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .tco-link {
+            color: #007bff;
+            text-decoration: none;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .tco-link:hover {
+            text-decoration: underline;
+        }
+
+        .reasoning {
+            max-width: 450px;
+            font-size: 0.8rem;
+            line-height: 1.3;
+            color: #495057;
+        }
+
+        .other-codes {
+            max-width: 200px;
+        }
+
+        .other-codes div {
+            margin-bottom: 3px;
+            font-size: 0.8rem;
+        }
+
+        .spinner {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #495057;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        .cell-spinner {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #adb5bd;
+            border-radius: 50%;
+            width: 14px;
+            height: 14px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .download-btn {
+            margin-top: 15px;
+            background: #28a745;
+        }
+
+        .download-btn:hover {
+            background: #1e7e34;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #e9ecef;
+            border-radius: 3px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: #007bff;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .progress-steps {
+            margin-top: 6px;
+            color: #6c757d;
+            font-size: 0.85rem;
+        }
+        .progress-steps strong {
+            color: #343a40;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+            }
+            
+            .results-table {
+                font-size: 0.8rem;
+            }
+            
+            th, td {
+                padding: 8px 4px;
+            }
+            
+            .description {
+                max-width: 150px;
+            }
+            
+            .reasoning {
+                max-width: 200px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Clear AI Tariff Classifier</h1>
+            <p>Upload CSV files to classify items with Australian tariff codes</p>
+        </div>
+
+        <div class="upload-section">
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-text">Drop your CSV file here or click to browse</div>
+                <div class="upload-subtext">CSV format: id, description[, supplier_name] (supplier_name optional)</div>
+            </div>
+            <input type="file" id="fileInput" accept=".csv" />
+            <div style="margin: 10px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <label for="tokenInput" style="font-weight:500;">API Token</label>
+                <input id="tokenInput" type="password" placeholder="Paste Bearer token" style="flex: 1 1 260px; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;" />
+                <button class="btn" id="showTokenBtn" type="button">Show</button>
+                <label for="regionSelect" style="font-weight:500;">Region</label>
+                <select id="regionSelect" style="padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+                    <option value="au" selected>Australia (AU)</option>
+                    <option value="nz">New Zealand (NZ)</option>
+                </select>
+            </div>
+            <button class="btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()">
+                Choose File
+            </button>
+            <button class="btn primary" id="classifyBtn" onclick="classifyItems()" disabled>
+                Classify Items
+            </button>
+
+            <div id="status"></div>
+            <div class="progress-bar" id="progressBar" style="display: none;">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-steps" id="progressSteps" style="display: none;"></div>
+        </div>
+
+        <div class="results-section" id="resultsSection">
+            <div class="results-summary" id="resultsSummary"></div>
+            <div class="results-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Description</th>
+                            <th>Supplier</th>
+                            <th>Best HS Code</th>
+                            <th>Best Stat Code</th>
+                            <th>TCO Link</th>
+                            <th>Other Codes</th>
+                            <th>Time (s)</th>
+                            <th>Reasoning</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultsBody"></tbody>
+                </table>
+            </div>
+            <button class="btn download-btn" onclick="downloadResults()">
+                Download Results CSV
+            </button>
+        </div>
+    </div>
+
+    <script>
+        let uploadedData = [];
+        let classificationResults = [];
+        let currentRegion = 'au';
+
+        // Progress step labels and thresholds
+        const PROGRESS_STEPS = [
+            { threshold: 0,   text: 'Understanding the products' },
+            { threshold: 20,  text: 'Researching the products' },
+            { threshold: 45,  text: 'Classifying the products' },
+            { threshold: 70,  text: 'Synthesising the recommendations' },
+            { threshold: 90,  text: 'Finalising the responses' },
+        ];
+
+        function renderProgressSteps(activeIndex) {
+            return PROGRESS_STEPS.map((s, i) => i === activeIndex ? `<strong>${s.text}</strong>` : s.text).join(' -> ');
+        }
+
+        function updateProgressSteps(el, percent) {
+            let idx = 0;
+            for (let i = PROGRESS_STEPS.length - 1; i >= 0; i -= 1) {
+                if (percent >= PROGRESS_STEPS[i].threshold) { idx = i; break; }
+            }
+            el.innerHTML = renderProgressSteps(idx);
+        }
+
+        // File upload handlers
+        const fileInput = document.getElementById('fileInput');
+        const uploadArea = document.getElementById('uploadArea');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const classifyBtn = document.getElementById('classifyBtn');
+        const status = document.getElementById('status');
+        const tokenInput = document.getElementById('tokenInput');
+        const showTokenBtn = document.getElementById('showTokenBtn');
+
+        // Load token from localStorage
+        try {
+            const saved = localStorage.getItem('apiToken');
+            if (saved) tokenInput.value = saved;
+        } catch (e) {}
+
+        // Persist token to localStorage
+        tokenInput.addEventListener('change', () => {
+            try { localStorage.setItem('apiToken', tokenInput.value.trim()); } catch (e) {}
+        });
+        tokenInput.addEventListener('blur', () => {
+            try { localStorage.setItem('apiToken', tokenInput.value.trim()); } catch (e) {}
+        });
+        showTokenBtn.addEventListener('click', () => {
+            if (tokenInput.type === 'password') {
+                tokenInput.type = 'text';
+                showTokenBtn.textContent = 'Hide';
+            } else {
+                tokenInput.type = 'password';
+                showTokenBtn.textContent = 'Show';
+            }
+        });
+
+        // Drag and drop handlers
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        uploadArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            if (!file.name.toLowerCase().endsWith('.csv')) {
+                showStatus('Please select a CSV file.', 'error');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const csv = e.target.result;
+                    uploadedData = parseCSV(csv);
+                    
+                    if (uploadedData.length === 0) {
+                        showStatus('CSV file appears to be empty.', 'error');
+                        return;
+                    }
+
+                    // Validate required columns
+                    const firstRow = uploadedData[0];
+                    if (!firstRow.id || !firstRow.description) {
+                        showStatus('CSV must have "id" and "description" columns.', 'error');
+                        return;
+                    }
+
+                    showStatus(`Successfully loaded ${uploadedData.length} items from CSV`, 'success');
+                    classifyBtn.disabled = false;
+                    displayInitialTable();
+                    
+                } catch (error) {
+                    showStatus('Error parsing CSV file: ' + error.message, 'error');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function parseCSV(csv) {
+            const lines = csv.trim().split('\n');
+            const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+            
+            return lines.slice(1).map((line, index) => {
+                const values = line.split(',').map(v => v.trim().replace(/^["']|["']$/g, ''));
+                const item = {};
+                headers.forEach((header, i) => {
+                    item[header] = values[i] || '';
+                });
+                
+                // Ensure we have an ID
+                if (!item.id) {
+                    item.id = String(index + 1);
+                }
+                
+                return item;
+            }).filter(item => item.description && item.description.trim());
+        }
+
+        async function classifyItems() {
+            if (uploadedData.length === 0) {
+                showStatus('Please upload a CSV file first.', 'error');
+                return;
+            }
+
+            const token = (tokenInput.value || '').trim();
+            if (!token) {
+                showStatus('Missing API token. Paste the token first.', 'error');
+                return;
+            }
+
+            classifyBtn.disabled = true;
+            showStatus('Classifying items... This may take a while.', 'loading');
+            
+            // Show progress bar
+            const progressBar = document.getElementById('progressBar');
+            const progressFill = document.getElementById('progressFill');
+            const progressStepsEl = document.getElementById('progressSteps');
+            progressBar.style.display = 'block';
+            progressFill.style.width = '0%';
+            progressStepsEl.style.display = 'block';
+            progressStepsEl.innerHTML = renderProgressSteps(0);
+
+            // Show loading indicators in the table and summary only when classification starts
+            showLoadingIndicators();
+
+            try {
+                const requestBody = {
+                    items: uploadedData.map(item => ({
+                        id: item.id,
+                        description: item.description,
+                        supplier_name: item.supplier_name || item.supplier || item['supplier name'] || undefined
+                    }))
+                };
+
+                // Simulate progress more slowly (avg 70–120s) until server completes
+                let progress = 0;
+                const totalDurationSec = 70 + Math.floor(Math.random() * 51); // 70..120
+                const startTs = Date.now();
+                const progressInterval = setInterval(() => {
+                    const elapsed = (Date.now() - startTs) / 1000;
+                    const planned = Math.min(95, (elapsed / totalDurationSec) * 100);
+                    if (planned > progress) progress = planned;
+                    progressFill.style.width = progress.toFixed(2) + '%';
+                    updateProgressSteps(progressStepsEl, progress);
+                }, 1000);
+
+                const region = (document.getElementById('regionSelect').value || 'au').toLowerCase();
+                currentRegion = region;
+                const endpoint = region === 'nz' ? '/classify/nz' : '/classify/au';
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + token,
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                clearInterval(progressInterval);
+                progressFill.style.width = '100%';
+                updateProgressSteps(progressStepsEl, 100);
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                classificationResults = data.results;
+
+                showStatus(`Successfully classified ${classificationResults.length} items!`, 'success');
+                displayResults();
+                
+                setTimeout(() => {
+                    progressBar.style.display = 'none';
+                }, 1000);
+
+            } catch (error) {
+                showStatus('Error during classification: ' + error.message, 'error');
+                progressBar.style.display = 'none';
+                // Revert to initial table with blanks
+                if (uploadedData.length > 0) displayInitialTable();
+            } finally {
+                classifyBtn.disabled = false;
+            }
+        }
+
+        function showStatus(message, type) {
+            status.innerHTML = message;
+            status.className = `status ${type}`;
+            status.style.display = 'block';
+        }
+
+        function displayResults() {
+            const resultsSection = document.getElementById('resultsSection');
+            const resultsSummary = document.getElementById('resultsSummary');
+            const resultsBody = document.getElementById('resultsBody');
+            const theadRow = document.querySelector('thead tr');
+            if (theadRow && theadRow.children && theadRow.children[4]) {
+                theadRow.children[4].textContent = currentRegion === 'nz' ? 'Best Stat Key' : 'Best Stat Code';
+            }
+
+            // Calculate summary statistics
+            const totalItems = classificationResults.length;
+            const avgTime = totalItems ? (classificationResults.reduce((sum, r) => sum + (r.total_time_seconds || 0), 0) / totalItems) : 0;
+            const tcoCount = classificationResults.filter(r => r.best_suggested_tco_link).length;
+
+            // Display summary
+            resultsSummary.innerHTML = `
+                <div class="summary-item">
+                    <span class="summary-number">${totalItems}</span>
+                    <span class="summary-label">Total Items</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-number">${avgTime.toFixed(1)}s</span>
+                    <span class="summary-label">Avg Time</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-number">${tcoCount}</span>
+                    <span class="summary-label">TCO Available</span>
+                </div>
+            `;
+
+            // Build a quick lookup from id -> supplier name from the uploaded CSV
+            const idToSupplier = new Map(uploadedData.map(item => [String(item.id), item.supplier_name || item.supplier || item['supplier name'] || '']));
+
+            // Display results table
+            resultsBody.innerHTML = classificationResults.map(result => {
+                const supplier = result.supplier_name || idToSupplier.get(String(result.id)) || '';
+                const bestStat = currentRegion === 'nz' ? (result.best_suggested_stat_key || '-') : (result.best_suggested_stat_code || '-');
+                const otherCodesHtml = (result.other_suggested_codes || []).map(code => {
+                    const stat = currentRegion === 'nz' ? code.stat_key : code.stat_code;
+                    const hs = code.hs_code;
+                    const tco = currentRegion === 'nz' ? '' : (code.tco_link ? ` <a href="${code.tco_link}" target="_blank" class="tco-link">TCO</a>` : '');
+                    return `<div><span class="code">${hs}</span>/<span class="code">${stat}</span>${tco}</div>`;
+                }).join('');
+                return `
+                <tr>
+                    <td class="item-id">${result.id}</td>
+                    <td class="description" title="${result.description}">${result.description}</td>
+                    <td class="supplier">${supplier ? `<span class="supplier-badge">${supplier}</span>` : '-'}</td>
+                    <td><span class="code">${result.best_suggested_hs_code}</span></td>
+                    <td><span class="code">${bestStat}</span></td>
+                    <td>
+                        ${currentRegion === 'nz' 
+                            ? '-' 
+                            : (result.best_suggested_tco_link 
+                                ? `<a href="${result.best_suggested_tco_link}" target="_blank" class="tco-link">TCO</a>`
+                                : '-')}
+                    </td>
+                    <td class="other-codes">${otherCodesHtml}</td>
+                    <td><span class="time-badge">${(result.total_time_seconds || 0).toFixed(1)}s</span></td>
+                    <td class="reasoning">${result.reasoning || '-'}</td>
+                </tr>`;
+            }).join('');
+
+            resultsSection.style.display = 'block';
+            resultsSection.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function displayInitialTable() {
+            const resultsSection = document.getElementById('resultsSection');
+            const resultsSummary = document.getElementById('resultsSummary');
+            const resultsBody = document.getElementById('resultsBody');
+
+            // Summary with placeholders (no spinners until classify starts)
+            const totalItems = uploadedData.length;
+            resultsSummary.innerHTML = `
+                <div class="summary-item">
+                    <span class="summary-number">${totalItems}</span>
+                    <span class="summary-label">Total Items</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-number">-</span>
+                    <span class="summary-label">Avg Time</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-number">-</span>
+                    <span class="summary-label">TCO Available</span>
+                </div>
+            `;
+
+            // Supplier lookup
+            const idToSupplier = new Map(uploadedData.map(item => [String(item.id), item.supplier_name || item.supplier || item['supplier name'] || '']));
+
+            // Initial rows with blanks in result columns
+            resultsBody.innerHTML = uploadedData.map(item => `
+                <tr data-id="${String(item.id)}">
+                    <td class="item-id">${item.id}</td>
+                    <td class="description" title="${item.description}">${item.description}</td>
+                    <td class="supplier">${(idToSupplier.get(String(item.id)) || '') ? `<span class="supplier-badge">${idToSupplier.get(String(item.id))}</span>` : '-'}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td class="reasoning">-</td>
+                </tr>
+            `).join('');
+
+            resultsSection.style.display = 'block';
+            resultsSection.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function downloadResults() {
+            if (classificationResults.length === 0) return;
+
+            // Convert results to CSV
+            const headers = currentRegion === 'nz'
+                ? ['id', 'description', 'supplier_name', 'best_suggested_hs_code', 'best_suggested_stat_key', 'other_codes', 'total_time_seconds', 'reasoning']
+                : ['id', 'description', 'supplier_name', 'best_suggested_hs_code', 'best_suggested_stat_code', 'best_suggested_tco_link', 'other_codes', 'total_time_seconds', 'reasoning'];
+
+            const idToSupplier = new Map(uploadedData.map(item => [String(item.id), item.supplier_name || item.supplier || item['supplier name'] || '']));
+
+            const csvContent = [
+                headers.join(','),
+                ...classificationResults.map(result => {
+                    const supplier = result.supplier_name || idToSupplier.get(String(result.id)) || '';
+                    if (currentRegion === 'nz') {
+                        const other = (result.other_suggested_codes || []).map(c => `${c.hs_code}/${c.stat_key}`).join('; ');
+                        return [
+                            result.id,
+                            `"${result.description.replace(/"/g, '""')}"`,
+                            `"${supplier.replace(/"/g, '""')}"`,
+                            result.best_suggested_hs_code,
+                            result.best_suggested_stat_key || '',
+                            `"${other}"`,
+                            result.total_time_seconds || '',
+                            `"${(result.reasoning || '').replace(/"/g, '""')}"`
+                        ].join(',');
+                    } else {
+                        const other = (result.other_suggested_codes || []).map(c => `${c.hs_code}/${c.stat_code}`).join('; ');
+                        return [
+                            result.id,
+                            `"${result.description.replace(/"/g, '""')}"`,
+                            `"${supplier.replace(/"/g, '""')}"`,
+                            result.best_suggested_hs_code,
+                            result.best_suggested_stat_code || '',
+                            result.best_suggested_tco_link || '',
+                            `"${other}"`,
+                            result.total_time_seconds || '',
+                            `"${(result.reasoning || '').replace(/"/g, '""')}"`
+                        ].join(',');
+                    }
+                })
+            ].join('\n');
+
+            // Download file
+            const blob = new Blob([csvContent], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `tariff_classification_results_${currentRegion}_${new Date().toISOString().split('T')[0]}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        }
+
+        function showLoadingIndicators() {
+            const resultsSection = document.getElementById('resultsSection');
+            const resultsSummary = document.getElementById('resultsSummary');
+            const resultsBody = document.getElementById('resultsBody');
+
+            // Update summary to show spinners for metrics
+            const totalItems = uploadedData.length;
+            resultsSummary.innerHTML = `
+                <div class="summary-item">
+                    <span class="summary-number">${totalItems}</span>
+                    <span class="summary-label">Total Items</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-number"><span class="cell-spinner" aria-label="loading"></span></span>
+                    <span class="summary-label">Avg Time</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-number"><span class="cell-spinner" aria-label="loading"></span></span>
+                    <span class="summary-label">TCO Available</span>
+                </div>
+            `;
+
+            // Replace result columns with spinners for each row
+            const rows = resultsBody.querySelectorAll('tr');
+            rows.forEach(row => {
+                const cells = row.children;
+                for (let i = 3; i <= 8; i += 1) {
+                    if (cells[i]) {
+                        cells[i].innerHTML = '<span class="cell-spinner" aria-label="loading"></span>';
+                    }
+                }
+            });
+
+            resultsSection.style.display = 'block';
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    container_name: clearai-audit-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      # Docker-specific override for output directory inside container
+      - OUTPUT_DIRECTORY=/app/output
+    volumes:
+      # Map container output to your local machine
+      # Container path /app/output → Your local path from LOCAL_OUTPUT_PATH
+      - ${LOCAL_OUTPUT_PATH:-./output}:/app/output
+      # Mount checklists directory (read-only)
+      - ./checklists:/app/checklists:ro
+      # Optional: Mount source code for development (read-only)
+      - ./backend/src:/app/src:ro
+    networks:
+      - audit-network
+    restart: unless-stopped
+
+  frontend:
+    build: 
+      context: ./frontend/audit
+      dockerfile: Dockerfile
+    container_name: clearai-audit-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # Server-side API URL (inside Docker network)
+      - API_URL=http://backend:8000
+      # Client-side API URL (from browser)
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NODE_ENV=production
+    depends_on:
+      - backend
+    networks:
+      - audit-network
+    restart: unless-stopped
+
+networks:
+  audit-network:
+    driver: bridge
+

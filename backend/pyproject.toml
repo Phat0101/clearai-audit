@@ -1,0 +1,29 @@
+[project]
+name = "ai-classifier"
+version = "0.1.0"
+description = "FastAPI project with uv and Granian"
+requires-python = ">=3.11"
+dependencies = [
+	"fastapi>=0.116.1",
+	"granian>=2.5.0",
+	"pydantic-ai>=0.2.11,<0.3",
+	"httpx>=0.28.1",
+	"pydantic>=2.0.0",
+	"python-dotenv",
+	"google-genai>=1.31.0",
+]
+
+[dependency-groups]
+dev = [
+	"httpx>=0.28.1",
+	"pytest>=8.4.1",
+	"granian[reload]>=2.5.0",
+	"pydantic-ai>=0.2.11,<0.3",
+	"httpx>=0.28.1",
+	"pydantic>=2.0.0",
+	"google-genai>=1.31.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
