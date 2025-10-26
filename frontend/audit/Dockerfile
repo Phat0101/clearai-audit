@@ -2,27 +2,24 @@ FROM node:22-slim AS base
 
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Install necessary system dependencies for native modules in base stage
+FROM base AS builder
+WORKDIR /app
+
+# Install build dependencies for native modules
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-FROM base AS deps
-WORKDIR /app
-
+# Copy package files and install dependencies
 COPY package.json package-lock.json* ./
 RUN npm ci
 
-FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+# Copy application code
 COPY . .
 
-# Rebuild native modules to ensure they're compiled for the correct architecture
-RUN npm rebuild lightningcss
-
+# Build the application
 RUN npm run build
 
 FROM node:22-slim AS runner
