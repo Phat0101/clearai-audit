@@ -10,11 +10,11 @@ RUN apt-get update && apt-get install -y \
 # Install uv
 RUN pip install --no-cache-dir uv
 
-# Copy project files (from backend directory since context is root)
-COPY backend/pyproject.toml backend/uv.lock ./
-COPY backend/src ./src
+# Copy project files (context is backend directory in Railway)
+COPY pyproject.toml uv.lock ./
+COPY src ./src
 
-# Copy checklists directory from root
+# Copy checklists directory
 COPY checklists ./checklists
 
 # Install dependencies using uv
