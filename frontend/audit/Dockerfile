@@ -29,6 +29,16 @@ RUN pnpm add --no-save lightningcss-linux-x64-gnu@1.30.1 || true
 # Copy application code
 COPY . .
 
+# Accept build arguments from Railway
+ARG NEXT_PUBLIC_API_URL
+ARG API_URL
+ARG NEXT_PUBLIC_AUTH_TOKEN
+
+# Set environment variables for Next.js build (these get baked into the client bundle)
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV API_URL=$API_URL
+ENV NEXT_PUBLIC_AUTH_TOKEN=$NEXT_PUBLIC_AUTH_TOKEN
+
 # Build the application
 RUN pnpm run build
 
