@@ -14,7 +14,12 @@ RUN apt-get update && apt-get install -y \
 
 # Copy package files and install dependencies
 COPY package.json package-lock.json* ./
-RUN npm ci
+
+# Install dependencies including optional dependencies (needed for lightningcss)
+RUN npm ci --include=optional
+
+# Explicitly install the linux x64 gnu version of lightningcss
+RUN npm install --no-save lightningcss-linux-x64-gnu@1.30.1
 
 # Copy application code
 COPY . .
