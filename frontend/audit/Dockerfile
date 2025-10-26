@@ -1,6 +1,11 @@
 FROM node:22-slim AS base
 
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+
+# Enable corepack to use pnpm
+RUN corepack enable
 
 FROM base AS builder
 WORKDIR /app
@@ -13,19 +18,19 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package files and install dependencies
-COPY package.json package-lock.json* ./
+COPY package.json pnpm-lock.yaml ./
 
 # Install dependencies including optional dependencies (needed for lightningcss)
-RUN npm ci --include=optional
+RUN pnpm install --frozen-lockfile
 
-# Explicitly install the linux x64 gnu version of lightningcss
-RUN npm install --no-save lightningcss-linux-x64-gnu@1.30.1
+# Explicitly install the linux x64 gnu version of lightningcss if needed
+RUN pnpm add --no-save lightningcss-linux-x64-gnu@1.30.1 || true
 
 # Copy application code
 COPY . .
 
 # Build the application
-RUN npm run build
+RUN pnpm run build
 
 FROM node:22-slim AS runner
 WORKDIR /app
