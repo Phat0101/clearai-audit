@@ -1,9 +1,16 @@
-FROM node:22-alpine AS base
+FROM node:22-slim AS base
 
 ENV NEXT_TELEMETRY_DISABLED=1
 
 FROM base AS deps
 WORKDIR /app
+
+# Install necessary system dependencies for native modules
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json* ./
 RUN npm ci
