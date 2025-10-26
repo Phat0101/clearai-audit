@@ -10,4 +10,9 @@ wheels/
 .venv
 .DS_Store
 .env
-output/
+
+# Ignore output directory at project root only (for backend results)
+/output/
+
+# Don't ignore frontend routes named 'output'
+!/frontend/**/output/
