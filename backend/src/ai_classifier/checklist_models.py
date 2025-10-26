@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 
 # Base types for checklist validation
-ChecklistStatus = Literal["PASS", "FAIL", "QUESTIONABLE"]
+ChecklistStatus = Literal["PASS", "FAIL", "QUESTIONABLE", "N/A"]
 DocumentType = Literal["entry_print", "air_waybill", "commercial_invoice"]
 Region = Literal["AU", "NZ"]
 
@@ -49,7 +49,7 @@ class ChecklistValidationOutput(BaseModel):
     auditing_criteria: str = Field(..., description="The auditing criteria being checked")
     status: ChecklistStatus = Field(
         ..., 
-        description="PASS if validation succeeds, FAIL if validation fails, QUESTIONABLE if unclear or partially matching"
+        description="PASS if validation succeeds, FAIL if validation fails, QUESTIONABLE if unclear or partially matching, N/A if not applicable"
     )
     assessment: str = Field(
         ..., 
@@ -92,7 +92,7 @@ class TariffLineValidation(BaseModel):
     extracted_stat_code: str = Field(..., description="2-digit stat code extracted from entry print")
     suggested_tariff_code: str = Field(..., description="System-suggested 8-digit tariff code")
     suggested_stat_code: str = Field(..., description="System-suggested 2-digit stat code")
-    status: ChecklistStatus = Field(..., description="PASS if codes match, QUESTIONABLE if in alternatives, FAIL if no match")
+    status: ChecklistStatus = Field(..., description="PASS if codes match, QUESTIONABLE if in alternatives, FAIL if no match, N/A if not applicable")
     assessment: str = Field(..., description="Detailed assessment including reasoning")
     other_suggested_codes: List[str] = Field(default_factory=list, description="Other suggested codes for reference")
 
@@ -139,13 +139,12 @@ def get_checklist_path(region: Region) -> Path:
             checklist_dir = docker_path
             logger.debug(f"Using Docker checklist path: {checklist_dir}")
         else:
-            # Try 2: Development - go up to backend/, then to parent project root
+            # Try 2: Development - go up to backend/ directory
             # current_file.parent = ai_classifier/
             # current_file.parent.parent = src/
             # current_file.parent.parent.parent = backend/
-            # current_file.parent.parent.parent.parent = project root
-            backend_parent = current_file.parent.parent.parent.parent
-            checklist_dir = backend_parent / "checklists"
+            backend_dir = current_file.parent.parent.parent
+            checklist_dir = backend_dir / "checklists"
             logger.debug(f"Using dev checklist path: {checklist_dir}")
     
     filename = f"{region.lower()}_checklist.json"

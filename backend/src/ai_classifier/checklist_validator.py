@@ -54,14 +54,16 @@ Your task is to validate MULTIPLE checklist items in a single pass by directly a
 - **PASS**: Clear match or acceptable variation according to pass conditions
 - **FAIL**: Clear mismatch or violation of pass conditions
 - **QUESTIONABLE**: Ambiguous situation requiring human review
+- **N/A**: Check is not applicable (e.g., no FTA declared, field not present in documents)
 
 **Special Considerations**:
-- If both source and target values are not found/missing in the documents, default to PASS
+- If both source and target values are not found/missing in the documents, use N/A for optional fields (like FTA, preference scheme) or PASS for mandatory fields
 - For company names: Allow fuzzy matching (abbreviations, minor spelling differences, corporate codes)
 - For numeric values: Allow reasonable rounding differences (e.g., 100.00 vs 100)
 - For currencies and codes: Allow abbreviations (e.g., "USD" vs "US Dollar", "DDP" vs "Delivered Duty Paid")
 - For incoterms: Consider that DDP requires special handling for importer identity
 - For dates: Allow different formats (e.g., "2025-01-15" vs "15/01/2025")
+- For FTA and preference schemes: Use N/A when no declaration is present or field is not applicable
 
 **Critical**:
 - You MUST return a validation result for EVERY checklist item provided
@@ -554,7 +556,7 @@ Return a JSON object with a "line_items" array containing all extracted line ite
         return {
             "line_items": tariff_output.line_items,
             "validations": [],
-            "summary": {"total": 0, "passed": 0, "failed": 0, "questionable": 0}
+            "summary": {"total": 0, "passed": 0, "failed": 0, "questionable": 0, "not_applicable": 0}
         }
     
     # Import the AU classifier
@@ -566,7 +568,7 @@ Return a JSON object with a "line_items" array containing all extracted line ite
         return {
             "line_items": tariff_output.line_items,
             "validations": [],
-            "summary": {"total": 0, "passed": 0, "failed": 0, "questionable": 0}
+            "summary": {"total": 0, "passed": 0, "failed": 0, "questionable": 0, "not_applicable": 0}
         }
     
     # Classify each line item
@@ -661,6 +663,7 @@ Return a JSON object with a "line_items" array containing all extracted line ite
     passed = sum(1 for v in validations if v.status == "PASS")
     failed = sum(1 for v in validations if v.status == "FAIL")
     questionable = sum(1 for v in validations if v.status == "QUESTIONABLE")
+    not_applicable = sum(1 for v in validations if v.status == "N/A")
     
     print(f"\n" + "=" * 80, flush=True)
     print(f"✅ Tariff Line Classification Complete", flush=True)
@@ -668,6 +671,7 @@ Return a JSON object with a "line_items" array containing all extracted line ite
     print(f"   ✅ PASS: {passed}", flush=True)
     print(f"   ❌ FAIL: {failed}", flush=True)
     print(f"   ⚠️  QUESTIONABLE: {questionable}", flush=True)
+    print(f"   ➖ N/A: {not_applicable}", flush=True)
     print(f"=" * 80, flush=True)
     
     return {
@@ -677,7 +681,8 @@ Return a JSON object with a "line_items" array containing all extracted line ite
             "total": total,
             "passed": passed,
             "failed": failed,
-            "questionable": questionable
+            "questionable": questionable,
+            "not_applicable": not_applicable
         }
     }
 
@@ -691,8 +696,8 @@ async def validate_all_checks(
     Validate all checks (header + valuation) + extract tariff line items for a region using PDF documents.
     
     This function makes EXACTLY THREE LLM calls IN PARALLEL:
-    1. ONE call for ALL header checks (13 checks)
-    2. ONE call for ALL valuation checks (7 checks)
+    1. ONE call for ALL header checks (8 checks)
+    2. ONE call for ALL valuation checks (3 checks)
     3. ONE call for tariff line extraction (invoice + entry print)
     
     All three calls run simultaneously using asyncio.gather() for maximum performance.
@@ -709,7 +714,7 @@ async def validate_all_checks(
             "header": [ChecklistValidationOutput, ...],
             "valuation": [ChecklistValidationOutput, ...],
             "tariff_lines": [TariffLineItem, ...],
-            "summary": {"total": 20, "passed": 15, "failed": 2, "questionable": 3}
+            "summary": {"total": 11, "passed": 8, "failed": 1, "questionable": 2}
         }
     """
     print(f"\n" + "=" * 80, flush=True)
@@ -717,8 +722,8 @@ async def validate_all_checks(
     print(f"=" * 80, flush=True)
     print(f"Documents provided: {list(documents.keys())}", flush=True)
     print(f"This will make EXACTLY THREE LLM calls IN PARALLEL:", flush=True)
-    print(f"  1. ONE call for ALL 13 header checks (with PDFs)", flush=True)
-    print(f"  2. ONE call for ALL 7 valuation checks (with PDFs)", flush=True)
+    print(f"  1. ONE call for ALL 8 header checks (with PDFs)", flush=True)
+    print(f"  2. ONE call for ALL 3 valuation checks (with PDFs)", flush=True)
     print(f"  3. ONE call for tariff line extraction (with PDFs)", flush=True)
     print(f"  Total: 3 LLM calls running simultaneously", flush=True)
     print(f"", flush=True)
@@ -751,7 +756,7 @@ async def validate_all_checks(
     tariff_result = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else None
     tariff_lines = tariff_result.get("line_items", []) if tariff_result else []
     tariff_validations = tariff_result.get("validations", []) if tariff_result else []
-    tariff_summary = tariff_result.get("summary", {"total": 0, "passed": 0, "failed": 0, "questionable": 0}) if tariff_result else {"total": 0, "passed": 0, "failed": 0, "questionable": 0}
+    tariff_summary = tariff_result.get("summary", {"total": 0, "passed": 0, "failed": 0, "questionable": 0, "not_applicable": 0}) if tariff_result else {"total": 0, "passed": 0, "failed": 0, "questionable": 0, "not_applicable": 0}
     
     # Log any exceptions
     for idx, result in enumerate(results):
@@ -764,6 +769,7 @@ async def validate_all_checks(
     passed = sum(1 for r in (header_results + valuation_results) if r.status == "PASS")
     failed = sum(1 for r in (header_results + valuation_results) if r.status == "FAIL")
     questionable = sum(1 for r in (header_results + valuation_results) if r.status == "QUESTIONABLE")
+    not_applicable = sum(1 for r in (header_results + valuation_results) if r.status == "N/A")
     
     print(f"\n" + "=" * 80, flush=True)
     print(f"🎉 COMPLETE VALIDATION FOR {region} REGION", flush=True)
@@ -772,11 +778,13 @@ async def validate_all_checks(
     print(f"  ✅ PASS: {passed}", flush=True)
     print(f"  ❌ FAIL: {failed}", flush=True)
     print(f"  ⚠️  QUESTIONABLE: {questionable}", flush=True)
+    print(f"  ➖ N/A: {not_applicable}", flush=True)
     if tariff_validations:
         print(f"\nTariff line checks: {tariff_summary['total']}", flush=True)
         print(f"  ✅ PASS: {tariff_summary['passed']}", flush=True)
         print(f"  ❌ FAIL: {tariff_summary['failed']}", flush=True)
         print(f"  ⚠️  QUESTIONABLE: {tariff_summary['questionable']}", flush=True)
+        print(f"  ➖ N/A: {tariff_summary['not_applicable']}", flush=True)
     print(f"=" * 80, flush=True)
     
     return {
@@ -788,7 +796,8 @@ async def validate_all_checks(
             "total": total_checks,
             "passed": passed,
             "failed": failed,
-            "questionable": questionable
+            "questionable": questionable,
+            "not_applicable": not_applicable
         },
         "tariff_summary": tariff_summary
     }

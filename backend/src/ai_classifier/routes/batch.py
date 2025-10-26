@@ -10,14 +10,14 @@ from pathlib import Path
 
 from ..util.batch_processor import group_files_by_job
 from ..document_classifier import classify_document, get_file_suffix
-from ..document_extractor import extract_document_data
+# from ..document_extractor import extract_document_data  # Commented out - extraction not needed
 from ..checklist_validator import validate_all_checks
 from ..file_manager import (
     get_next_run_id,
     create_run_directory,
     create_job_directory,
     save_classified_file,
-    save_extraction_json
+    # save_extraction_json  # Commented out - extraction not needed
 )
 
 
@@ -151,14 +151,14 @@ async def process_batch(
     region: str = "AU"  # AU or NZ - default to AU
 ):
     """
-    Full batch processing: upload, group, classify, extract, and validate files.
+    Full batch processing: upload, group, classify, and validate files.
     
     This endpoint:
     1. Creates a new run directory
     2. Groups files by job ID
     3. Classifies each file using Gemini 2.5 Flash
-    4. Extracts structured data from entry prints and commercial invoices
-    5. Validates against checklist using Gemini 2.5 Pro (2 LLM calls per job)
+    4. Saves classified PDFs to job folders
+    5. Validates against checklist using Gemini 2.5 Pro (3 parallel LLM calls per job)
     6. Saves validation results as JSON in run folder root
     7. Returns comprehensive results
     
@@ -265,32 +265,32 @@ async def process_batch(
                 
                 print(f"      ✓ Saved as: {saved_path.name}", flush=True)
                 
-                    # Extract structured data for supported document types
+                # Extract structured data for supported document types (COMMENTED OUT - not needed)
                 extracted_data = None
-                if classification.document_type in ["entry_print", "commercial_invoice"]:
-                    try:
-                        print(f"      📊 Extracting structured data...", flush=True)
-                        extraction_result = await extract_document_data(
-                            content, 
-                            file.filename, 
-                            classification.document_type
-                        )
-                        extracted_data = extraction_result.model_dump()
-                        print(f"      ✓ Extracted {len(extracted_data)} fields", flush=True)
-                        
-                        # Save extracted data as JSON
-                        print(f"      💾 Saving extraction JSON...", flush=True)
-                        json_path = save_extraction_json(
-                            extracted_data,
-                            file.filename,
-                            classification.document_type,
-                            job_path
-                        )
-                        print(f"      ✓ Saved JSON as: {json_path.name}", flush=True)
-                        
-                    except Exception as extract_error:
-                        print(f"      ⚠️  Extraction failed: {extract_error}", flush=True)
-                        # Continue even if extraction fails
+                # if classification.document_type in ["entry_print", "commercial_invoice"]:
+                #     try:
+                #         print(f"      📊 Extracting structured data...", flush=True)
+                #         extraction_result = await extract_document_data(
+                #             content, 
+                #             file.filename, 
+                #             classification.document_type
+                #         )
+                #         extracted_data = extraction_result.model_dump()
+                #         print(f"      ✓ Extracted {len(extracted_data)} fields", flush=True)
+                #         
+                #         # Save extracted data as JSON
+                #         print(f"      💾 Saving extraction JSON...", flush=True)
+                #         json_path = save_extraction_json(
+                #             extracted_data,
+                #             file.filename,
+                #             classification.document_type,
+                #             job_path
+                #         )
+                #         print(f"      ✓ Saved JSON as: {json_path.name}", flush=True)
+                #         
+                #     except Exception as extract_error:
+                #         print(f"      ⚠️  Extraction failed: {extract_error}", flush=True)
+                #         # Continue even if extraction fails
                 
                 return ClassifiedFileInfo(
                     original_filename=file.filename,
@@ -369,7 +369,8 @@ async def process_batch(
                 print(f"      Saved to: {validation_filename}", flush=True)
                 print(f"      Summary: {validation_results['summary']['passed']} PASS, "
                           f"{validation_results['summary']['failed']} FAIL, "
-                          f"{validation_results['summary']['questionable']} QUESTIONABLE", flush=True)
+                          f"{validation_results['summary']['questionable']} QUESTIONABLE, "
+                          f"{validation_results['summary'].get('not_applicable', 0)} N/A", flush=True)
                 
                 # Save tariff line items separately if extraction was successful
                 if validation_results.get("tariff_lines"):
@@ -394,7 +395,8 @@ async def process_batch(
                         tariff_sum = validation_results["tariff_summary"]
                         print(f"      Tariff validation: {tariff_sum['passed']} PASS, "
                               f"{tariff_sum['failed']} FAIL, "
-                              f"{tariff_sum['questionable']} QUESTIONABLE", flush=True)
+                              f"{tariff_sum['questionable']} QUESTIONABLE, "
+                              f"{tariff_sum.get('not_applicable', 0)} N/A", flush=True)
                 else:
                     print(f"\n   ⚠️  No tariff lines extracted", flush=True)
             else:

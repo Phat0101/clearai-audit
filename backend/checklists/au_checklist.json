@@ -43,6 +43,23 @@
         },
         {
           "id": "au_h_003",
+          "auditing_criteria": "Related Transaction",
+          "description": "Verify if the buyer and seller are related parties and assess whether the relationship has influenced the transaction value",
+          "checking_logic": "Check for indicators of a related-party relationship between buyer and seller (common ownership, shared directors, family ties, affiliated companies). If related, verify that the declared transaction value reflects an arm's length price (comparable to market prices between unrelated parties). Look for related party declarations or statements on the commercial invoice. Reference Customs Act 1901",
+          "pass_conditions": "If parties are not related, return N/A. If parties are related but the transaction value reflects market prices and is properly documented, return PASS. If parties are related and the value appears manipulated or lacks proper documentation, return FAIL. If the relationship status is unclear, return QUESTIONABLE.",
+          "compare_fields": {
+            "source_doc": "entry_print",
+            "source_field": "related_party_indicator",
+            "target_doc": "commercial_invoice",
+            "target_field": [
+              "buyer_company_name",
+              "supplier_company_name",
+              "related_party_declaration"
+            ]
+          }
+        },
+        {
+          "id": "au_h_004",
           "auditing_criteria": "Incoterms match",
           "description": "Incoterms consistency between entry print and commercial invoice",
           "checking_logic": "Compare incoterms between entry print and commercial invoice",
@@ -55,7 +72,7 @@
           }
         },
         {
-          "id": "au_h_004",
+          "id": "au_h_005",
           "auditing_criteria": "Currency match",
           "description": "Currency consistency between entry print and commercial invoice",
           "checking_logic": "Compare currency between entry print and commercial invoice",
@@ -68,7 +85,7 @@
           }
         },
         {
-          "id": "au_h_005",
+          "id": "au_h_006",
           "auditing_criteria": "Country of origin consistency",
           "description": "Country of origin validation across documents",
           "checking_logic": "Compare country of origin on entry print with country of origin on commercial invoice",
@@ -81,67 +98,54 @@
           }
         },
         {
-          "id": "au_h_006",
-          "auditing_criteria": "Weight consistency",
-          "description": "Weight of goods consistency across documents",
-          "checking_logic": "Compare weight on air waybill with weight on entry print",
-          "pass_conditions": "Weight must be consistent across all documents, allowing for minor rounding differences",
+          "id": "au_h_007",
+          "auditing_criteria": "Free trade agreement",
+          "description": "Free trade agreement declaration validation",
+          "checking_logic": "Compare the free trade agreement declaration on the entry print with any FTA information on the commercial invoice. Check if the declared FTA is appropriate for the country of origin and applicable trade agreements.",
+          "pass_conditions": "If FTA is declared on entry print, it should be supported by corresponding information on the commercial invoice. If no FTA is applicable or declared, return N/A.",
           "compare_fields": {
             "source_doc": "entry_print",
-            "source_field": "total_weight",
-            "target_doc": "air_waybill",
-            "target_field": "total_weight"
+            "source_field": "free_trade_agreement",
+            "target_doc": "commercial_invoice",
+            "target_field": "fta_declaration"
           }
         },
         {
-          "id": "au_h_007",
-          "auditing_criteria": "Description consistency",
-          "description": "Goods description consistency (not HS-linked description)",
-          "checking_logic": "Check if description on entry print matches description on invoice. Should describe actual goods, not generic HS code descriptions.",
-          "pass_conditions": "Description on entry print must match invoice description, allowing for reasonable variations",
+          "id": "au_h_008",
+          "auditing_criteria": "Preference scheme",
+          "description": "Tariff preference scheme validation",
+          "checking_logic": "Check if any preference scheme is declared on the entry print and verify it is consistent with information on the commercial invoice and applicable for the country of origin.",
+          "pass_conditions": "If a preference scheme is declared on entry print, it should be supported by corresponding information on the commercial invoice. If no preference scheme is applicable or declared, return N/A.",
           "compare_fields": {
             "source_doc": "entry_print",
-            "source_field": "goods_description",
+            "source_field": "preference_scheme",
             "target_doc": "commercial_invoice",
-            "target_field": "invoice_items"
+            "target_field": "preference_scheme_declaration"
           }
         }
       ]
     },
     "valuation": {
       "name": "Valuation Elements Checklist",
-      "description": "FOB, CIF, freight, insurance, and other valuation-related checks",
+      "description": "Invoice total, transport & insurance, and discount/additional charges validation",
       "checks": [
         {
           "id": "au_v_001",
-          "auditing_criteria": "FOB value match",
-          "description": "Free on board (FOB) value validation",
-          "checking_logic": "Compare FOB value on entry print with FOB amount on commercial invoice.",
-          "pass_conditions": "FOB value on entry print must match the FOB amount (or calculated FOB value) on commercial invoice. If the invoice does not provide a FOB amount, then default to PASS.",
+          "auditing_criteria": "ITOT",
+          "description": "Invoice total amount validation",
+          "checking_logic": "Compare the invoice total (ITOT) on the entry print with the invoice total amount on the commercial invoice.",
+          "pass_conditions": "Invoice total on entry print must match the invoice total amount on the commercial invoice.",
           "compare_fields": {
             "source_doc": "entry_print",
-            "source_field": "fob",
+            "source_field": "itot",
             "target_doc": "commercial_invoice",
-            "target_field": "fob_amount"
+            "target_field": "invoice_total_amount"
           }
         },
         {
           "id": "au_v_002",
-          "auditing_criteria": "CIF value match",
-          "description": "Cost, Insurance, and Freight (CIF) value validation",
-          "checking_logic": "Compare CIF value on entry print with CIF amount on commercial invoice.",
-          "pass_conditions": "CIF value on entry print must match the CIF amount (or calculated CIF value) on commercial invoice. If the invoice does not provide a CIF amount, then default to PASS.",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": "cif",
-            "target_doc": "commercial_invoice",
-            "target_field": "cif_amount"
-          }
-        },
-        {
-          "id": "au_v_003",
-          "auditing_criteria": "Transport & Insurance costs match",
-          "description": "Total of freight and insurance costs validation",
+          "auditing_criteria": "T& I (transport & insurance)",
+          "description": "Transport and insurance costs validation",
           "checking_logic": "Compare transport and insurance costs on entry print with transport_and_insurance amount on commercial invoice.",
           "pass_conditions": "Transport and insurance costs on entry print must match the transport_and_insurance amount (or calculated sum) on commercial invoice. If the invoice does not provide a transport_and_insurance amount, then default to PASS.",
           "compare_fields": {
@@ -152,16 +156,19 @@
           }
         },
         {
-          "id": "au_v_004",
-          "auditing_criteria": "Invoice total match",
-          "description": "Total invoice amount validation",
-          "checking_logic": "Compare the invoice total on the entry print with the invoice total amount on the commercial invoice.",
-          "pass_conditions": "Invoice total on entry print must match the invoice total amount on the commercial invoice.",
+          "id": "au_v_003",
+          "auditing_criteria": "Discount/Additional charges",
+          "description": "Discount or additional charges validation",
+          "checking_logic": "Check if any discounts or additional charges declared on the entry print are supported by corresponding information on the commercial invoice. Verify that discounts reduce the customs value and additional charges increase it appropriately.",
+          "pass_conditions": "If discounts or additional charges are declared on entry print, they should be supported by corresponding information on the commercial invoice. If no discounts or additional charges are declared or found, return N/A.",
           "compare_fields": {
             "source_doc": "entry_print",
-            "source_field": "itot",
+            "source_field": "discount_additional_charges",
             "target_doc": "commercial_invoice",
-            "target_field": "invoice_total_amount"
+            "target_field": [
+              "discount_amount",
+              "additional_charges"
+            ]
           }
         }
       ]

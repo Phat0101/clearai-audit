@@ -256,7 +256,6 @@ export default function Home() {
       if (job.validation_results.header.length > 0) {
         sheetData.push(['HEADER CHECKS']);
         sheetData.push([
-          'Check ID',
           'Criteria',
           'Status',
           'Assessment',
@@ -268,7 +267,6 @@ export default function Home() {
 
         job.validation_results.header.forEach((check) => {
           sheetData.push([
-            check.check_id,
             check.auditing_criteria,
             check.status,
             check.assessment,
@@ -286,7 +284,6 @@ export default function Home() {
       if (job.validation_results.valuation.length > 0) {
         sheetData.push(['VALUATION CHECKS']);
         sheetData.push([
-          'Check ID',
           'Criteria',
           'Status',
           'Assessment',
@@ -298,7 +295,6 @@ export default function Home() {
 
         job.validation_results.valuation.forEach((check) => {
           sheetData.push([
-            check.check_id,
             check.auditing_criteria,
             check.status,
             check.assessment,
@@ -350,15 +346,14 @@ export default function Home() {
 
       // Set column widths for better readability (handles both header/valuation and tariff formats)
       worksheet['!cols'] = [
-        { wch: 15 }, // Check ID / Line #
-        { wch: 50 }, // Criteria / Description
+        { wch: 50 }, // Criteria / Line # / Description
         { wch: 12 }, // Status (both formats)
-        { wch: 15 }, // Assessment / Declared Code
+        { wch: 50 }, // Assessment / Declared Code
         { wch: 15 }, // Source Document / Declared Stat
         { wch: 15 }, // Target Document / Recommended Code
         { wch: 15 }, // Source Value / Recommended Stat
         { wch: 30 }, // Target Value / Other Codes
-        { wch: 50 }, // (header/val only) / Assessment
+        { wch: 50 }, // (tariff only) Assessment
       ];
 
       // Apply styling to cells
@@ -375,8 +370,8 @@ export default function Home() {
           // Initialize cell style if not exists
           if (!cell.s) cell.s = {};
 
-          // Color code status cells (column C - now consistent for both header/valuation and tariff)
-          if (colNum === 2 && cell.v) {
+          // Color code status cells (column B - index 1)
+          if (colNum === 1 && cell.v) {
             const status = String(cell.v).toUpperCase();
             if (status === 'PASS') {
               cell.s = {
@@ -396,14 +391,14 @@ export default function Home() {
             }
           }
 
-          // Make assessment cells wrap text (column D for header/valuation, column I for tariff)
-          if ((colNum === 3 || colNum === 8) && cell.v && String(cell.v).length > 50) {
+          // Make assessment cells wrap text (column C for header/valuation, column H for tariff)
+          if ((colNum === 2 || colNum === 7) && cell.v && String(cell.v).length > 50) {
             cell.s = {
               ...cell.s,
               alignment: { wrapText: true, vertical: 'top' }
             };
             // Set row height for assessment rows (approximately 3 lines, taller for tariff)
-            rowHeights[rowNum] = colNum === 8 ? 60 : 45;
+            rowHeights[rowNum] = colNum === 7 ? 60 : 45;
           }
         }
       }
@@ -432,7 +427,7 @@ export default function Home() {
   return (
     <div className="h-screen bg-background flex flex-col p-4">
       <div className="max-w-7xl mx-auto w-full flex flex-col h-full">
-        <header className="mb-4 flex-shrink-0">
+        <header className="mb-4 shrink-0">
           <div className="flex items-center justify-between">
             <h1 className="text-3xl font-semibold tracking-tight">
               Clear.ai Audit
