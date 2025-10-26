@@ -16,9 +16,16 @@
           "pass_conditions": "Owner on EPR matches the appropriate party (supplier for DDP, buyer for other incoterms) on CI.",
           "compare_fields": {
             "source_doc": "entry_print",
-            "source_field": ["ownerName", "iTerms"],
+            "source_field": [
+              "ownerName",
+              "iTerms"
+            ],
             "target_doc": "commercial_invoice",
-            "target_field": ["buyer_company_name", "supplier_company_name", "inco_terms"]
+            "target_field": [
+              "buyer_company_name",
+              "supplier_company_name",
+              "inco_terms"
+            ]
           }
         },
         {
@@ -62,45 +69,6 @@
         },
         {
           "id": "au_h_005",
-          "auditing_criteria": "Invoice number match",
-          "description": "Invoice number exact match between documents",
-          "checking_logic": "Compare invoice number on entry print with invoice number on commercial invoice",
-          "pass_conditions": "Invoice numbers must match exactly",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": "invNo",
-            "target_doc": "commercial_invoice",
-            "target_field": "invoice_number"
-          }
-        },
-        {
-          "id": "au_h_006",
-          "auditing_criteria": "Shipper consistency",
-          "description": "Shipper name consistency across documents",
-          "checking_logic": "Compare shipper name on air waybill with supplier name on commercial invoice",
-          "pass_conditions": "Shipper on AWB must be consistent with supplier on commercial invoice, allowing for fuzzy matching",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "shipper_company_name",
-            "target_doc": "commercial_invoice",
-            "target_field": "supplier_company_name"
-          }
-        },
-        {
-          "id": "au_h_007",
-          "auditing_criteria": "Consignee consistency",
-          "description": "Consignee/receiver name consistency across documents",
-          "checking_logic": "Compare consignee name on air waybill with buyer name on commercial invoice",
-          "pass_conditions": "Consignee must be consistent across documents, allowing for fuzzy matching",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "consignee_company_name",
-            "target_doc": "commercial_invoice",
-            "target_field": "buyer_company_name"
-          }
-        },
-        {
-          "id": "au_h_008",
           "auditing_criteria": "Country of origin consistency",
           "description": "Country of origin validation across documents",
           "checking_logic": "Compare country of origin on entry print with country of origin on commercial invoice",
@@ -113,59 +81,20 @@
           }
         },
         {
-          "id": "au_h_009",
-          "auditing_criteria": "Country of export match",
-          "description": "Country of export consistency",
-          "checking_logic": "Compare country of export on air waybill with country of export on entry print",
-          "pass_conditions": "Country of export must be consistent",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "origin_country",
-            "target_doc": "entry_print",
-            "target_field": "country_of_export"
-          }
-        },
-        {
-          "id": "au_h_010",
-          "auditing_criteria": "Port of origin consistency",
-          "description": "Origin and load port validation",
-          "checking_logic": "Compare origin port and departure airport from air waybill with entry print",
-          "pass_conditions": "Port information must be consistent across documents",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": ["origin_airport", "departure_airport"],
-            "target_doc": "entry_print",
-            "target_field": "port_of_loading"
-          }
-        },
-        {
-          "id": "au_h_011",
+          "id": "au_h_006",
           "auditing_criteria": "Weight consistency",
           "description": "Weight of goods consistency across documents",
           "checking_logic": "Compare weight on air waybill with weight on entry print",
           "pass_conditions": "Weight must be consistent across all documents, allowing for minor rounding differences",
           "compare_fields": {
-            "source_doc": "air_waybill",
+            "source_doc": "entry_print",
             "source_field": "total_weight",
-            "target_doc": "entry_print",
+            "target_doc": "air_waybill",
             "target_field": "total_weight"
           }
         },
         {
-          "id": "au_h_012",
-          "auditing_criteria": "Package count consistency",
-          "description": "Number of packages consistency",
-          "checking_logic": "Compare number of packages across air waybill and entry print",
-          "pass_conditions": "Package count must be consistent across all documents",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "total_pieces",
-            "target_doc": "entry_print",
-            "target_field": "number_of_packages"
-          }
-        },
-        {
-          "id": "au_h_013",
+          "id": "au_h_007",
           "auditing_criteria": "Description consistency",
           "description": "Goods description consistency (not HS-linked description)",
           "checking_logic": "Check if description on entry print matches description on invoice. Should describe actual goods, not generic HS code descriptions.",
@@ -185,19 +114,6 @@
       "checks": [
         {
           "id": "au_v_001",
-          "auditing_criteria": "VFD (Value for Duty) validation",
-          "description": "Value for Duty consistency between documents",
-          "checking_logic": "Compare VFD on entry print with invoice total, considering incoterm adjustments",
-          "pass_conditions": "VFD on entry print must correctly represent the dutiable value based on invoice and incoterm",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": "value_for_duty",
-            "target_doc": "commercial_invoice",
-            "target_field": ["invoice_total_amount", "inco_terms"]
-          }
-        },
-        {
-          "id": "au_v_002",
           "auditing_criteria": "FOB value match",
           "description": "Free on board (FOB) value validation",
           "checking_logic": "Compare FOB value on entry print with FOB amount on commercial invoice.",
@@ -210,7 +126,7 @@
           }
         },
         {
-          "id": "au_v_003",
+          "id": "au_v_002",
           "auditing_criteria": "CIF value match",
           "description": "Cost, Insurance, and Freight (CIF) value validation",
           "checking_logic": "Compare CIF value on entry print with CIF amount on commercial invoice.",
@@ -223,33 +139,7 @@
           }
         },
         {
-          "id": "au_v_004",
-          "auditing_criteria": "Freight validation",
-          "description": "Freight amount validation based on incoterm",
-          "checking_logic": "If freight inclusive incoterm and freight specified on invoice, check against entry print. If freight unknown, it is acceptable to declare as zero.",
-          "pass_conditions": "If freight amount specified, it must match between commercial invoice and entry print. If no freight specified, pass is acceptable.",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": ["freight", "iTerms"],
-            "target_doc": "commercial_invoice",
-            "target_field": ["freight_amount", "inco_terms"]
-          }
-        },
-        {
-          "id": "au_v_005",
-          "auditing_criteria": "Insurance cost validation",
-          "description": "Insurance charges consistency",
-          "checking_logic": "If insurance-inclusive incoterm (CIF, CIP), verify insurance is declared. Compare insurance on entry with insurance on invoice if provided.",
-          "pass_conditions": "Insurance must be declared for insurance-inclusive incoterms. Insurance amount must match between entry and invoice if both are provided.",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": ["insurance", "iTerms"],
-            "target_doc": "commercial_invoice",
-            "target_field": ["insurance_amount", "inco_terms"]
-          }
-        },
-        {
-          "id": "au_v_006",
+          "id": "au_v_003",
           "auditing_criteria": "Transport & Insurance costs match",
           "description": "Total of freight and insurance costs validation",
           "checking_logic": "Compare transport and insurance costs on entry print with transport_and_insurance amount on commercial invoice.",
@@ -262,7 +152,7 @@
           }
         },
         {
-          "id": "au_v_007",
+          "id": "au_v_004",
           "auditing_criteria": "Invoice total match",
           "description": "Total invoice amount validation",
           "checking_logic": "Compare the invoice total on the entry print with the invoice total amount on the commercial invoice.",
