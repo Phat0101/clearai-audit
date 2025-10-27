@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -92,6 +93,7 @@ interface ProcessResponse {
 }
 
 export default function Home() {
+  const router = useRouter();
   const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -227,8 +229,11 @@ export default function Home() {
       const data: ProcessResponse = await response.json();
       console.log('Processing successful:', data);
       
+      // Small delay to ensure success message is logged, then redirect
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
       // Redirect to output page after successful processing
-      window.location.href = '/output';
+      router.push('/output');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Processing failed');
       console.error('Processing error:', err);
@@ -279,14 +284,14 @@ export default function Home() {
               <Button 
                 variant="outline" 
                 size="sm"
-                onClick={() => window.location.href = '/output'}
+                onClick={() => router.push('/output')}
               >
                 Browse Output
               </Button>
               <Button 
                 variant="outline" 
                 size="sm"
-                onClick={() => window.location.href = '/checklist'}
+                onClick={() => router.push('/checklist')}
               >
                 Manage Checklists
               </Button>

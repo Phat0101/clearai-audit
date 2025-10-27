@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 
@@ -322,7 +322,7 @@ export default function ChecklistPage() {
             <div className="flex-1 overflow-y-auto">
                 <div className="max-w-7xl mx-auto p-4 space-y-4">
                     {/* Header Checks */}
-                    <Card>
+                    <Card className="gap-0">
                         <CardHeader>
                             <div className="flex items-center justify-between">
                                 <div>
@@ -332,9 +332,6 @@ export default function ChecklistPage() {
                                             {checklist.categories.header.checks.length}
                                         </Badge>
                                     </CardTitle>
-                                    <CardDescription>
-                                        Cross-reference checks across documents
-                                    </CardDescription>
                                 </div>
                                 <div className="flex gap-2">
                                     <Button
@@ -375,7 +372,7 @@ export default function ChecklistPage() {
                     </Card>
 
                     {/* Valuation Checks */}
-                    <Card>
+                    <Card className="gap-0">
                         <CardHeader>
                             <div className="flex items-center justify-between">
                                 <div>
@@ -385,9 +382,6 @@ export default function ChecklistPage() {
                                             {checklist.categories.valuation.checks.length}
                                         </Badge>
                                     </CardTitle>
-                                    <CardDescription>
-                                        FOB, CIF, freight, and insurance validations
-                                    </CardDescription>
                                 </div>
                                 <div className="flex gap-2">
                                     <Button

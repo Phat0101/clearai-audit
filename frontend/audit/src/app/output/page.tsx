@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { 
@@ -98,6 +99,7 @@ interface ValidationData {
 }
 
 export default function OutputPage() {
+  const router = useRouter();
   const [runs, setRuns] = useState<Run[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<ExpandedDirectories>({});
   const [loading, setLoading] = useState(true);
@@ -602,7 +604,7 @@ export default function OutputPage() {
               </Button>
               <Button 
                 variant="default"
-                onClick={() => window.location.href = '/'}
+                onClick={() => router.push('/')}
               >
                 <Home className="h-4 w-4 mr-2" />
                 Home
