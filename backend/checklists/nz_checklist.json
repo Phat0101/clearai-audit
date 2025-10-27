@@ -2,7 +2,7 @@
   "version": "1.0.0",
   "region": "NZ",
   "description": "New Zealand customs audit checklist for DHL Express shipments",
-  "last_updated": "2025-10-14",
+  "last_updated": "2025-10-27",
   "categories": {
     "header": {
       "name": "Header-Level Cross-Reference Checks",
@@ -43,6 +43,23 @@
         },
         {
           "id": "nz_h_003",
+          "auditing_criteria": "Related Transaction",
+          "description": "Verify if the buyer and seller are related parties and assess whether the relationship has influenced the transaction value",
+          "checking_logic": "Check for indicators of a related-party relationship between buyer and seller (common ownership, shared directors, family ties, affiliated companies). If related, verify that the declared transaction value reflects an arm's length price (comparable to market prices between unrelated parties). Look for related party declarations or statements on the commercial invoice. Reference Customs and Excise Act 2018",
+          "pass_conditions": "If parties are not related, return N/A. If parties are related but the transaction value reflects market prices and is properly documented, return PASS. If parties are related and the value appears manipulated or lacks proper documentation, return FAIL. If the relationship status is unclear, return QUESTIONABLE.",
+          "compare_fields": {
+            "source_doc": "entry_print",
+            "source_field": "related_party_indicator",
+            "target_doc": "commercial_invoice",
+            "target_field": [
+              "buyer_company_name",
+              "supplier_company_name",
+              "related_party_declaration"
+            ]
+          }
+        },
+        {
+          "id": "nz_h_004",
           "auditing_criteria": "Incoterms match",
           "description": "Incoterms consistency between entry print and commercial invoice",
           "checking_logic": "Compare incoterms between entry print and commercial invoice",
@@ -55,7 +72,7 @@
           }
         },
         {
-          "id": "nz_h_004",
+          "id": "nz_h_005",
           "auditing_criteria": "Currency match",
           "description": "Currency consistency between entry print and commercial invoice",
           "checking_logic": "Compare currency between entry print and commercial invoice",
@@ -68,46 +85,7 @@
           }
         },
         {
-          "id": "nz_h_005",
-          "auditing_criteria": "Invoice number match",
-          "description": "Invoice number exact match between documents",
-          "checking_logic": "Compare invoice number on entry print with invoice number on commercial invoice",
-          "pass_conditions": "Invoice numbers must match exactly",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": "invNo",
-            "target_doc": "commercial_invoice",
-            "target_field": "invoice_number"
-          }
-        },
-        {
           "id": "nz_h_006",
-          "auditing_criteria": "Shipper consistency",
-          "description": "Shipper name consistency across documents",
-          "checking_logic": "Compare shipper name on air waybill with supplier name on commercial invoice",
-          "pass_conditions": "Shipper on AWB must be consistent with supplier on commercial invoice, allowing for fuzzy matching",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "shipper_company_name",
-            "target_doc": "commercial_invoice",
-            "target_field": "supplier_company_name"
-          }
-        },
-        {
-          "id": "nz_h_007",
-          "auditing_criteria": "Consignee consistency",
-          "description": "Consignee/receiver name consistency across documents",
-          "checking_logic": "Compare consignee name on air waybill with buyer name on commercial invoice",
-          "pass_conditions": "Consignee must be consistent across documents, allowing for fuzzy matching",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "consignee_company_name",
-            "target_doc": "commercial_invoice",
-            "target_field": "buyer_company_name"
-          }
-        },
-        {
-          "id": "nz_h_008",
           "auditing_criteria": "Country of origin consistency",
           "description": "Country of origin validation across documents",
           "checking_logic": "Compare country of origin on entry print with country of origin on commercial invoice",
@@ -120,163 +98,54 @@
           }
         },
         {
-          "id": "nz_h_009",
-          "auditing_criteria": "Country of export match",
-          "description": "Country of export consistency",
-          "checking_logic": "Compare country of export on air waybill with country of export on entry print",
-          "pass_conditions": "Country of export must be consistent",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "origin_country",
-            "target_doc": "entry_print",
-            "target_field": "country_of_export"
-          }
-        },
-        {
-          "id": "nz_h_010",
-          "auditing_criteria": "Port of origin consistency",
-          "description": "Origin and load port validation",
-          "checking_logic": "Compare origin port and departure airport from air waybill with entry print",
-          "pass_conditions": "Port information must be consistent across documents",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": [
-              "origin_airport",
-              "departure_airport"
-            ],
-            "target_doc": "entry_print",
-            "target_field": "port_of_loading"
-          }
-        },
-        {
-          "id": "nz_h_011",
-          "auditing_criteria": "Weight consistency",
-          "description": "Weight of goods consistency across documents",
-          "checking_logic": "Compare weight on air waybill with weight on entry print",
-          "pass_conditions": "Weight must be consistent across all documents, allowing for minor rounding differences",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "total_weight",
-            "target_doc": "entry_print",
-            "target_field": "total_weight"
-          }
-        },
-        {
-          "id": "nz_h_012",
-          "auditing_criteria": "Package count consistency",
-          "description": "Number of packages consistency",
-          "checking_logic": "Compare number of packages across air waybill and entry print",
-          "pass_conditions": "Package count must be consistent across all documents",
-          "compare_fields": {
-            "source_doc": "air_waybill",
-            "source_field": "total_pieces",
-            "target_doc": "entry_print",
-            "target_field": "number_of_packages"
-          }
-        },
-        {
-          "id": "nz_h_013",
-          "auditing_criteria": "Description consistency",
-          "description": "Goods description consistency (not HS-linked description)",
-          "checking_logic": "Check if description on entry print matches description on invoice. Should describe actual goods, not generic HS code descriptions.",
-          "pass_conditions": "Description on entry print must match invoice description, allowing for reasonable variations",
+          "id": "nz_h_007",
+          "auditing_criteria": "Free trade agreement",
+          "description": "Free trade agreement declaration validation",
+          "checking_logic": "Compare the free trade agreement declaration on the entry print with any FTA information on the commercial invoice. Check if the declared FTA is appropriate for the country of origin and applicable trade agreements (e.g., AANZFTA, CPTPP, NZ-China FTA).",
+          "pass_conditions": "If FTA is declared on entry print, it should be supported by corresponding information on the commercial invoice. If no FTA is applicable or declared, return N/A.",
           "compare_fields": {
             "source_doc": "entry_print",
-            "source_field": "goods_description",
+            "source_field": "free_trade_agreement",
             "target_doc": "commercial_invoice",
-            "target_field": "invoice_items"
+            "target_field": "fta_declaration"
+          }
+        },
+        {
+          "id": "nz_h_008",
+          "auditing_criteria": "Preference scheme",
+          "description": "Tariff preference scheme validation",
+          "checking_logic": "Check if any preference scheme is declared on the entry print and verify it is consistent with information on the commercial invoice and applicable for the country of origin.",
+          "pass_conditions": "If a preference scheme is declared on entry print, it should be supported by corresponding information on the commercial invoice. If no preference scheme is applicable or declared, return N/A.",
+          "compare_fields": {
+            "source_doc": "entry_print",
+            "source_field": "preference_scheme",
+            "target_doc": "commercial_invoice",
+            "target_field": "preference_scheme_declaration"
           }
         }
       ]
     },
     "valuation": {
       "name": "Valuation Elements Checklist",
-      "description": "FOB, CIF, freight, insurance, and other valuation-related checks",
+      "description": "Invoice total, transport & insurance, and discount/additional charges validation",
       "checks": [
         {
           "id": "nz_v_001",
-          "auditing_criteria": "VFD (Value for Duty) validation",
-          "description": "Value for Duty consistency between documents",
-          "checking_logic": "Compare VFD on entry print with invoice total, considering incoterm adjustments",
-          "pass_conditions": "VFD on entry print must correctly represent the dutiable value based on invoice and incoterm",
+          "auditing_criteria": "ITOT",
+          "description": "Invoice total amount validation",
+          "checking_logic": "Compare the invoice total (ITOT) on the entry print with the invoice total amount on the commercial invoice.",
+          "pass_conditions": "Invoice total on entry print must match the invoice total amount on the commercial invoice.",
           "compare_fields": {
             "source_doc": "entry_print",
-            "source_field": "value_for_duty",
+            "source_field": "itot",
             "target_doc": "commercial_invoice",
-            "target_field": [
-              "invoice_total_amount",
-              "inco_terms"
-            ]
+            "target_field": "invoice_total_amount"
           }
         },
         {
           "id": "nz_v_002",
-          "auditing_criteria": "FOB value match",
-          "description": "Free on board (FOB) value validation",
-          "checking_logic": "Compare FOB value on entry print with FOB amount on commercial invoice.",
-          "pass_conditions": "FOB value on entry print must match the FOB amount (or calculated FOB value) on commercial invoice. If the invoice does not provide a FOB amount, then default to PASS.",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": "fob",
-            "target_doc": "commercial_invoice",
-            "target_field": "fob_amount"
-          }
-        },
-        {
-          "id": "nz_v_003",
-          "auditing_criteria": "CIF value match",
-          "description": "Cost, Insurance, and Freight (CIF) value validation",
-          "checking_logic": "Compare CIF value on entry print with CIF amount on commercial invoice.",
-          "pass_conditions": "CIF value on entry print must match the CIF amount (or calculated CIF value) on commercial invoice. If the invoice does not provide a CIF amount, then default to PASS.",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": "cif",
-            "target_doc": "commercial_invoice",
-            "target_field": "cif_amount"
-          }
-        },
-        {
-          "id": "nz_v_004",
-          "auditing_criteria": "Freight validation",
-          "description": "Freight amount validation based on incoterm",
-          "checking_logic": "If freight inclusive incoterm and freight specified on invoice, check against entry print. If freight unknown, it is acceptable to declare as zero.",
-          "pass_conditions": "If freight amount specified, it must match between commercial invoice and entry print. If no freight specified, pass is acceptable.",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": [
-              "freight",
-              "iTerms"
-            ],
-            "target_doc": "commercial_invoice",
-            "target_field": [
-              "freight_amount",
-              "inco_terms"
-            ]
-          }
-        },
-        {
-          "id": "nz_v_005",
-          "auditing_criteria": "Insurance cost validation",
-          "description": "Insurance charges consistency",
-          "checking_logic": "If insurance-inclusive incoterm (CIF, CIP), verify insurance is declared. Compare insurance on entry with insurance on invoice if provided.",
-          "pass_conditions": "Insurance must be declared for insurance-inclusive incoterms. Insurance amount must match between entry and invoice if both are provided.",
-          "compare_fields": {
-            "source_doc": "entry_print",
-            "source_field": [
-              "insurance",
-              "iTerms"
-            ],
-            "target_doc": "commercial_invoice",
-            "target_field": [
-              "insurance_amount",
-              "inco_terms"
-            ]
-          }
-        },
-        {
-          "id": "nz_v_006",
-          "auditing_criteria": "Transport & Insurance costs match",
-          "description": "Total of freight and insurance costs validation",
+          "auditing_criteria": "T& I (transport & insurance)",
+          "description": "Transport and insurance costs validation",
           "checking_logic": "Compare transport and insurance costs on entry print with transport_and_insurance amount on commercial invoice.",
           "pass_conditions": "Transport and insurance costs on entry print must match the transport_and_insurance amount (or calculated sum) on commercial invoice. If the invoice does not provide a transport_and_insurance amount, then default to PASS.",
           "compare_fields": {
@@ -287,16 +156,19 @@
           }
         },
         {
-          "id": "nz_v_007",
-          "auditing_criteria": "Invoice total match",
-          "description": "Total invoice amount validation",
-          "checking_logic": "Compare the invoice total on the entry print with the invoice total amount on the commercial invoice.",
-          "pass_conditions": "Invoice total on entry print must match the invoice total amount on the commercial invoice.",
+          "id": "nz_v_003",
+          "auditing_criteria": "Discount/Additional charges",
+          "description": "Discount or additional charges validation",
+          "checking_logic": "Check if any discounts or additional charges declared on the entry print are supported by corresponding information on the commercial invoice. Verify that discounts reduce the customs value and additional charges increase it appropriately.",
+          "pass_conditions": "If discounts or additional charges are declared on entry print, they should be supported by corresponding information on the commercial invoice. If no discounts or additional charges are declared or found, return N/A.",
           "compare_fields": {
             "source_doc": "entry_print",
-            "source_field": "itot",
+            "source_field": "discount_additional_charges",
             "target_doc": "commercial_invoice",
-            "target_field": "invoice_total_amount"
+            "target_field": [
+              "discount_amount",
+              "additional_charges"
+            ]
           }
         }
       ]
