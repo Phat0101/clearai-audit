@@ -72,8 +72,8 @@ class TariffLineItem(BaseModel):
     line_number: int = Field(..., description="Line item number (sequential starting from 1)")
     description: str = Field(..., description="Product description from commercial invoice")
     tariff_code: str = Field(..., description="8-digit tariff classification code from entry print")
-    stat_code: str = Field(..., description="2-digit statistical code from entry print")
-    full_code: str = Field(..., description="Complete 10-digit code (tariff + stat)")
+    stat_code: str = Field(..., description="Statistical code from entry print (AU: 2-digit, NZ: 3-char like 00H)")
+    full_code: str = Field(..., description="Complete code (AU: 10 digits = tariff + stat, NZ: 11 chars = tariff + stat key)")
     invoice_quantity: str = Field(..., description="Quantity and unit from commercial invoice (e.g., '5 PCS', '10.5 KG')")
     entry_print_quantity: str = Field(..., description="Quantity and unit from entry print (e.g., '5 PCS', '10.5 KG')")
     unit_price: str = Field(..., description="Unit price from invoice (e.g., 'USD 25.00')")
@@ -101,9 +101,9 @@ class TariffLineValidation(BaseModel):
     
     # Tariff Classification Check
     extracted_tariff_code: str = Field(..., description="8-digit tariff code extracted from entry print")
-    extracted_stat_code: str = Field(..., description="2-digit stat code extracted from entry print")
+    extracted_stat_code: str = Field(..., description="Stat code from entry print (AU: 2-digit, NZ: 3-char)")
     suggested_tariff_code: str = Field(..., description="System-suggested 8-digit tariff code")
-    suggested_stat_code: str = Field(..., description="System-suggested 2-digit stat code")
+    suggested_stat_code: str = Field(..., description="System-suggested stat code (AU: 2-digit, NZ: 3-char)")
     tariff_classification_status: ChecklistStatus = Field(..., description="Status for tariff classification check")
     tariff_classification_assessment: str = Field(..., description="Assessment for tariff classification")
     other_suggested_codes: List[str] = Field(default_factory=list, description="Other suggested tariff codes")

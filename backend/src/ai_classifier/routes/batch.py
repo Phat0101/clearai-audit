@@ -327,12 +327,40 @@ async def process_batch(
         try:
             # Load classified PDFs from job folder
             documents = {}
+            entry_prints = []  # Collect all entry prints to choose the best one
+            
             for classified_file in classified_files:
                 if classified_file.saved_filename and classified_file.document_type in ["entry_print", "commercial_invoice", "air_waybill"]:
                     pdf_path = Path(classified_file.saved_path)
                     if pdf_path.exists():
-                        documents[classified_file.document_type] = pdf_path.read_bytes()
-                        print(f"      Loaded {classified_file.document_type} PDF ({len(documents[classified_file.document_type]):,} bytes)", flush=True)
+                        pdf_bytes = pdf_path.read_bytes()
+                        
+                        if classified_file.document_type == "entry_print":
+                            # For entry_print, collect all of them (NZ may have E2 and SAD forms)
+                            entry_prints.append({
+                                "filename": classified_file.saved_filename,
+                                "bytes": pdf_bytes,
+                                "size": len(pdf_bytes)
+                            })
+                            print(f"      Loaded {classified_file.document_type} PDF ({len(pdf_bytes):,} bytes) - {classified_file.saved_filename}", flush=True)
+                        else:
+                            # For other docs, just add directly
+                            documents[classified_file.document_type] = pdf_bytes
+                            print(f"      Loaded {classified_file.document_type} PDF ({len(pdf_bytes):,} bytes)", flush=True)
+            
+            # Handle multiple entry prints - prefer larger/more detailed ones
+            if entry_prints:
+                if len(entry_prints) > 1:
+                    # Multiple entry prints found (e.g., NZ E2 + SAD forms)
+                    # Prefer SAD (larger) over E2 (smaller summary)
+                    # Sort by size descending and take the largest
+                    entry_prints.sort(key=lambda x: x["size"], reverse=True)
+                    selected = entry_prints[0]
+                    print(f"      ℹ️  Multiple entry prints found ({len(entry_prints)}), using largest: {selected['filename']} ({selected['size']:,} bytes)", flush=True)
+                    documents["entry_print"] = selected["bytes"]
+                else:
+                    # Only one entry print
+                    documents["entry_print"] = entry_prints[0]["bytes"]
             
             # Check if we have the required documents
             if "entry_print" in documents and "commercial_invoice" in documents:

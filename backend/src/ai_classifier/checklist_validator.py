@@ -355,12 +355,67 @@ Your task is to extract and match line items from the Commercial Invoice and Ent
 """
 
 
-def _get_tariff_extractor_agent() -> Agent:
-    """Instantiate (or return cached) Gemini 2.5 Pro agent for tariff line extraction."""
-    global _tariff_extractor_agent
-    
-    if _tariff_extractor_agent is not None:
-        return _tariff_extractor_agent
+# System prompt for NZ tariff line extraction
+_TARIFF_EXTRACTION_PROMPT_NZ = """
+You are an expert customs data extraction specialist for DHL Express shipments in New Zealand.
+
+Your task is to extract and match line items from the Commercial Invoice and Entry Print documents.
+
+**Your Responsibilities**:
+1. Analyze the Commercial Invoice to extract ALL line items with:
+   - Product descriptions
+   - Quantities and units (invoice_quantity)
+   - Unit prices
+   - Total values (line totals)
+
+2. Analyze the Entry Print to extract ALL line items with:
+   - Tariff classification codes (8 digits)
+   - Statistical keys (3 characters: 2 digits + 1 letter, e.g., "00H", "15A")
+   - Complete codes (tariff + stat key = 11 characters total)
+   - Quantities and units (entry_print_quantity) - may be merged or different from invoice
+   - GST exemption indicator (true/false) - check if GST exemption is claimed for this line
+
+3. Match line items between the two documents based on:
+   - Line item order and position
+   - Product descriptions
+   - Quantities and values
+   - Note: Entry print may merge multiple invoice lines into one line
+
+4. Return a structured list of ALL line items with:
+   - Sequential line numbers (starting from 1)
+   - Description from invoice
+   - Tariff code (8 digits) from entry print
+   - Statistical key (3 characters: NNX format) from entry print
+   - Full code (11 characters: 8-digit tariff + 3-char stat key)
+   - invoice_quantity: Quantity and unit from COMMERCIAL INVOICE
+   - entry_print_quantity: Quantity and unit from ENTRY PRINT (may differ or be merged)
+   - Unit price from invoice
+   - Total value from invoice
+   - gst_exemption: Boolean indicating if GST exemption is claimed
+
+**Important Guidelines**:
+- Extract ALL line items from both documents
+- Match items carefully - the order may not be exactly the same
+- Statistical key format: 2 digits + 1 uppercase letter (e.g., "00H", "15A", "99Z")
+- Keep descriptions exactly as they appear in the invoice
+- Include currency symbols in prices (e.g., "NZD 25.00", "USD 50.00")
+- Format quantities with units (e.g., "5 PCS", "10.5 KG")
+- Extract BOTH invoice_quantity AND entry_print_quantity separately
+- Check for GST exemption indicators in entry print
+- Set concession_bylaw to null (NZ does not use the same system as AU)
+- If a line item appears in one document but not the other, include it with "NOT FOUND" for missing data
+
+**Critical**:
+- You MUST return ALL line items found in the documents
+- Line numbers should be sequential starting from 1
+- Match items based on order, description similarity, and values
+- Be thorough and precise in your extraction
+- Extract gst_exemption information carefully from entry print
+"""
+
+
+def _get_tariff_extractor_agent(region: Region = "AU") -> Agent:
+    """Instantiate Gemini 2.5 Pro agent for tariff line extraction with region-specific prompt."""
     
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -370,16 +425,17 @@ def _get_tariff_extractor_agent() -> Agent:
         "gemini-2.5-pro",
         provider=GoogleGLAProvider(api_key=api_key),
     )
+    
+    # Use region-specific prompt
+    instructions = _TARIFF_EXTRACTION_PROMPT_NZ if region == "NZ" else _TARIFF_EXTRACTION_PROMPT
 
-    _tariff_extractor_agent = Agent(
+    return Agent(
         model=model,
-        instructions=_TARIFF_EXTRACTION_PROMPT,
+        instructions=instructions,
         output_type=TariffLineItemsOutput,
         retries=2,
         model_settings={"gemini_thinking_config": ThinkingConfig(thinking_budget=5000), "temperature": 0.1},
     )
-    
-    return _tariff_extractor_agent
 
 
 def _get_validator_agent() -> Agent:
@@ -685,7 +741,7 @@ async def extract_and_validate_tariff_lines(
     Raises:
         Exception: If extraction fails after retries
     """
-    agent = _get_tariff_extractor_agent()
+    agent = _get_tariff_extractor_agent(region=region)
     
     print(f"\n" + "=" * 80, flush=True)
     print(f"📋 TARIFF LINE EXTRACTION - Job {job_id}", flush=True)
@@ -779,27 +835,44 @@ Return a JSON object with a "line_items" array containing all extracted line ite
     print(f"\n" + "=" * 80, flush=True)
     print(f"🤖 LINE ITEM VALIDATION - Job {job_id}", flush=True)
     print(f"=" * 80, flush=True)
-    print(f"Validating {len(tariff_output.line_items)} line items with 4 checks each:", flush=True)
-    print(f"  1. Tariff Classification & Stat Code", flush=True)
-    print(f"  2. Tariff/Bylaw Concession", flush=True)
-    print(f"  3. Quantity Consistency", flush=True)
-    print(f"  4. GST Exemption", flush=True)
+    # Display check counts based on region
+    total_checks = 4 if region == "AU" else 3
+    print(f"Validating {len(tariff_output.line_items)} line items with {total_checks} checks each:", flush=True)
+    if region == "AU":
+        print(f"  1. Tariff Classification & Stat Code", flush=True)
+        print(f"  2. Tariff/Bylaw Concession", flush=True)
+        print(f"  3. Quantity Consistency", flush=True)
+        print(f"  4. GST Exemption", flush=True)
+    else:  # NZ
+        print(f"  1. Tariff Classification & Stat Key", flush=True)
+        print(f"  2. Quantity Consistency", flush=True)
+        print(f"  3. GST Exemption", flush=True)
     
-    # Only support AU region for now
-    if region != "AU":
-        print(f"⚠️  Tariff classification only supported for AU region, skipping validation", flush=True)
-        return {
-            "line_items": tariff_output.line_items,
-            "validations": [],
-            "summary": {"total": 0, "passed": 0, "failed": 0, "questionable": 0, "not_applicable": 0}
-        }
-    
-    # Import the AU classifier
-    try:
-        from .au.classifier import _classify_single_item
-        from .au.tools import Item
-    except ImportError as e:
-        print(f"❌ Failed to import AU classifier: {e}", flush=True)
+    # Import the appropriate classifier based on region
+    if region == "AU":
+        try:
+            from .au.classifier import _classify_single_item
+            from .au.tools import Item
+        except ImportError as e:
+            print(f"❌ Failed to import AU classifier: {e}", flush=True)
+            return {
+                "line_items": tariff_output.line_items,
+                "validations": [],
+                "summary": {"total": 0, "passed": 0, "failed": 0, "questionable": 0, "not_applicable": 0}
+            }
+    elif region == "NZ":
+        try:
+            from .nz.classifier import classify_nz, ClassificationRequest
+            from .au.tools import Item
+        except ImportError as e:
+            print(f"❌ Failed to import NZ classifier: {e}", flush=True)
+            return {
+                "line_items": tariff_output.line_items,
+                "validations": [],
+                "summary": {"total": 0, "passed": 0, "failed": 0, "questionable": 0, "not_applicable": 0}
+            }
+    else:
+        print(f"⚠️  Unsupported region: {region}", flush=True)
         return {
             "line_items": tariff_output.line_items,
             "validations": [],
@@ -813,22 +886,49 @@ Return a JSON object with a "line_items" array containing all extracted line ite
         print(f"\n  Validating Line {line_item.line_number}: {line_item.description[:60]}...", flush=True)
         
         try:
-            # ===== CHECK 1: Tariff Classification & Stat Code =====
-            print(f"    [1/4] Tariff Classification...", flush=True)
+            # ===== CHECK 1: Tariff Classification & Stat Code/Key =====
+            check_num = "[1/4]" if region == "AU" else "[1/3]"
+            print(f"    {check_num} Tariff Classification...", flush=True)
             item = Item(
                 id=f"line_{line_item.line_number}",
                 description=line_item.description,
                 supplier_name=None
             )
             
-            classification_result, usage = await _classify_single_item(item)
+            if region == "AU":
+                classification_result, _ = await _classify_single_item(item)
+                extracted_tariff = line_item.tariff_code
+                extracted_stat = line_item.stat_code
+                suggested_tariff = classification_result.best_suggested_hs_code
+                suggested_stat = classification_result.best_suggested_stat_code
+                other_codes = [f"{sc.hs_code}.{sc.stat_code}" for sc in classification_result.other_suggested_codes]
+                reasoning = classification_result.reasoning
+                
+            elif region == "NZ":
+                # NZ classification - call existing classify_nz function
+                # Create Item using dict to avoid Pydantic validation issues
+                item_dict = {
+                    "id": f"line_{line_item.line_number}",
+                    "description": line_item.description,
+                    "supplier_name": None
+                }
+                nz_item = Item(**item_dict)
+                request_dict = {"items": [item_dict]}
+                request = ClassificationRequest(**request_dict)
+                nz_response = await classify_nz(request)
+                classification_result = nz_response.results[0]
+                
+                extracted_tariff = line_item.tariff_code
+                extracted_stat = line_item.stat_code
+                suggested_tariff = classification_result.best_suggested_hs_code
+                suggested_stat = classification_result.best_suggested_stat_key
+                other_codes = [f"{sc.hs_code}.{sc.stat_key}" for sc in classification_result.other_suggested_codes]
+                reasoning = classification_result.reasoning
+            else:
+                # This should never happen due to earlier region check, but handle it for safety
+                raise ValueError(f"Unsupported region: {region}")
             
-            extracted_tariff = line_item.tariff_code
-            extracted_stat = line_item.stat_code
-            suggested_tariff = classification_result.best_suggested_hs_code
-            suggested_stat = classification_result.best_suggested_stat_code
-            
-            # Determine tariff classification status
+            # Determine tariff classification status (common logic for both regions)
             tariff_status = "FAIL"
             tariff_assessment_parts = []
             
@@ -837,8 +937,8 @@ Return a JSON object with a "line_items" array containing all extracted line ite
                 tariff_assessment_parts.append(f"Exact match: {extracted_tariff}.{extracted_stat}")
             else:
                 match_found = False
-                for alt_code in classification_result.other_suggested_codes:
-                    if extracted_tariff == alt_code.hs_code and extracted_stat == alt_code.stat_code:
+                for alt_code in other_codes:
+                    if f"{extracted_tariff}.{extracted_stat}" in alt_code:
                         tariff_status = "QUESTIONABLE"
                         match_found = True
                         tariff_assessment_parts.append(f"Partial match in alternatives")
@@ -848,70 +948,70 @@ Return a JSON object with a "line_items" array containing all extracted line ite
                     tariff_status = "FAIL"
                     tariff_assessment_parts.append(f"No match. Expected: {suggested_tariff}.{suggested_stat}, Found: {extracted_tariff}.{extracted_stat}")
             
-            tariff_assessment_parts.append(f"Reasoning: {classification_result.reasoning}")
+            tariff_assessment_parts.append(f"Reasoning: {reasoning}")
             tariff_assessment = "\n".join(tariff_assessment_parts)
-            
-            other_codes = [f"{sc.hs_code}.{sc.stat_code}" for sc in classification_result.other_suggested_codes]
             
             print(f"       → {tariff_status}", flush=True)
             
-            # ===== CHECK 2: Tariff/Bylaw Concession =====
-            print(f"    [2/4] Concession/Bylaw...", flush=True)
-            concession_status = "N/A"
-            concession_assessment = "No concession claimed"
-            concession_link = None
-            
-            if line_item.concession_bylaw and line_item.concession_bylaw.strip():
-                # Concession is claimed, verify it using the tariff code
-                print(f"       Checking concession: {line_item.concession_bylaw} for tariff {extracted_tariff}", flush=True)
-                concession_data = await lookup_tariff_concession(
-                    tariff_code=extracted_tariff,
-                    claimed_concession=line_item.concession_bylaw
-                )
+            # ===== CHECK 2: Tariff/Bylaw Concession (AU ONLY) =====
+            if region == "AU":
+                print(f"    [2/4] Concession/Bylaw...", flush=True)
+                concession_status = "N/A"
+                concession_assessment = "No concession claimed"
+                concession_link = None
                 
-                if "error" in concession_data and concession_data.get("results", []) == []:
-                    concession_status = "FAIL"
-                    concession_assessment = f"Concession {line_item.concession_bylaw} claimed but lookup failed. Error: {concession_data['error']}"
-                elif concession_data.get("found"):
-                    # Concession found in database, now compare descriptions using LLM
-                    # Don't include API URL in output
-                    results = concession_data.get("results", [])
-                    all_results_count = len(concession_data.get("all_results", []))
-                    
-                    # Use LLM to compare item description with concession descriptions
-                    print(f"       Found {len(results)} matching concession(s) (out of {all_results_count} for this tariff)", flush=True)
-                    print(f"       Comparing descriptions with LLM...", flush=True)
-                    comparison_result = await _compare_concession_descriptions(
-                        line_item.description,
-                        results,
-                        line_item.concession_bylaw
+                if line_item.concession_bylaw and line_item.concession_bylaw.strip():
+                    # Concession is claimed, verify it using the tariff code
+                    print(f"       Checking concession: {line_item.concession_bylaw} for tariff {extracted_tariff}", flush=True)
+                    concession_data = await lookup_tariff_concession(
+                        tariff_code=extracted_tariff,
+                        claimed_concession=line_item.concession_bylaw
                     )
                     
-                    concession_status = comparison_result["status"]
-                    concession_assessment = comparison_result["assessment"]
-                    # Keep link as None - don't expose API URLs in output
-                else:
-                    # No matching concession found for this tariff code
-                    all_results_count = len(concession_data.get("all_results", []))
-                    if all_results_count > 0:
+                    if "error" in concession_data and concession_data.get("results", []) == []:
                         concession_status = "FAIL"
-                        concession_assessment = f"Concession {line_item.concession_bylaw} claimed but not found for tariff {extracted_tariff}. Found {all_results_count} other concession(s) for this tariff, but none match the claimed TC."
+                        concession_assessment = f"Concession {line_item.concession_bylaw} claimed but lookup failed. Error: {concession_data['error']}"
+                    elif concession_data.get("found"):
+                        # Concession found in database, now compare descriptions using LLM
+                        # Don't include API URL in output
+                        results = concession_data.get("results", [])
+                        all_results_count = len(concession_data.get("all_results", []))
+                        
+                        # Use LLM to compare item description with concession descriptions
+                        print(f"       Found {len(results)} matching concession(s) (out of {all_results_count} for this tariff)", flush=True)
+                        print(f"       Comparing descriptions with LLM...", flush=True)
+                        comparison_result = await _compare_concession_descriptions(
+                            line_item.description,
+                            results,
+                            line_item.concession_bylaw
+                        )
+                        
+                        concession_status = comparison_result["status"]
+                        concession_assessment = comparison_result["assessment"]
+                        # Keep link as None - don't expose API URLs in output
                     else:
-                        concession_status = "FAIL"
-                        concession_assessment = f"Concession {line_item.concession_bylaw} claimed but no concessions available for tariff {extracted_tariff}"
+                        # No matching concession found for this tariff code
+                        all_results_count = len(concession_data.get("all_results", []))
+                        if all_results_count > 0:
+                            concession_status = "FAIL"
+                            concession_assessment = f"Concession {line_item.concession_bylaw} claimed but not found for tariff {extracted_tariff}. Found {all_results_count} other concession(s) for this tariff, but none match the claimed TC."
+                        else:
+                            concession_status = "FAIL"
+                            concession_assessment = f"Concession {line_item.concession_bylaw} claimed but no concessions available for tariff {extracted_tariff}"
+                
+                print(f"       → {concession_status}", flush=True)
+            else:
+                # NZ doesn't use concessions
+                concession_status = "N/A"
+                concession_assessment = "Not applicable for NZ region"
+                concession_link = None
             
-            print(f"       → {concession_status}", flush=True)
+            # ===== CHECK 3 (or 2 for NZ): Quantity Validation =====
+            check_num = "[3/4]" if region == "AU" else "[2/3]"
+            print(f"    {check_num} Quantity...", flush=True)
             
-            # ===== CHECK 3: Quantity Validation =====
-            print(f"    [3/4] Quantity...", flush=True)
-            quantity_status = "PASS"
-            quantity_assessment = f"Invoice qty: {line_item.invoice_quantity}, Entry qty: {line_item.entry_print_quantity}"
-            
-            # Simple quantity comparison (you can make this more sophisticated)
-            if line_item.invoice_quantity.lower().replace(" ", "") == line_item.entry_print_quantity.lower().replace(" ", ""):
-                quantity_status = "PASS"
-                quantity_assessment = f"Quantities match: {line_item.invoice_quantity}"
-            elif "NOT FOUND" in line_item.invoice_quantity or "NOT FOUND" in line_item.entry_print_quantity:
+            # Check for missing quantities first
+            if "NOT FOUND" in line_item.invoice_quantity or "NOT FOUND" in line_item.entry_print_quantity:
                 quantity_status = "FAIL"
                 quantity_assessment = f"Quantity missing - Invoice: {line_item.invoice_quantity}, Entry: {line_item.entry_print_quantity}"
             else:
@@ -920,17 +1020,52 @@ Return a JSON object with a "line_items" array containing all extracted line ite
                 invoice_nums = re.findall(r'\d+\.?\d*', line_item.invoice_quantity)
                 entry_nums = re.findall(r'\d+\.?\d*', line_item.entry_print_quantity)
                 
-                if invoice_nums and entry_nums and float(invoice_nums[0]) == float(entry_nums[0]):
-                    quantity_status = "PASS"
-                    quantity_assessment = f"Quantities match: {line_item.invoice_quantity} ≈ {line_item.entry_print_quantity}"
+                # Normalize units for comparison (PCS, PC, PIECES, etc.)
+                invoice_unit = re.sub(r'\d+\.?\d*\s*', '', line_item.invoice_quantity).strip().upper()
+                entry_unit = re.sub(r'\d+\.?\d*\s*', '', line_item.entry_print_quantity).strip().upper()
+                
+                # Map common unit variations
+                unit_mappings = {
+                    'PCS': 'PIECES', 'PC': 'PIECES', 'PIECE': 'PIECES',
+                    'KGS': 'KG', 'KILOGRAMS': 'KG', 'KILOGRAM': 'KG',
+                    'LBS': 'LB', 'POUNDS': 'LB', 'POUND': 'LB',
+                    'UNITS': 'UNIT', 'U': 'UNIT',
+                    'BOXES': 'BOX', 'BX': 'BOX',
+                    'CARTONS': 'CARTON', 'CTN': 'CARTON',
+                    'SETS': 'SET',
+                    'PAIRS': 'PAIR', 'PR': 'PAIR'
+                }
+                
+                # Normalize units
+                normalized_invoice_unit = unit_mappings.get(invoice_unit, invoice_unit)
+                normalized_entry_unit = unit_mappings.get(entry_unit, entry_unit)
+                
+                if invoice_nums and entry_nums:
+                    invoice_qty = float(invoice_nums[0])
+                    entry_qty = float(entry_nums[0])
+                    
+                    # Check if quantities match
+                    if invoice_qty == entry_qty and normalized_invoice_unit == normalized_entry_unit:
+                        quantity_status = "PASS"
+                        quantity_assessment = f"Quantities match: {line_item.invoice_quantity} = {line_item.entry_print_quantity}"
+                    elif invoice_qty == entry_qty:
+                        # Same quantity but different unit abbreviations (should still pass)
+                        quantity_status = "PASS"
+                        quantity_assessment = f"Quantities match: {line_item.invoice_quantity} ≈ {line_item.entry_print_quantity} (different unit abbreviation)"
+                    else:
+                        # Different quantities - may be merged lines
+                        quantity_status = "QUESTIONABLE"
+                        quantity_assessment = f"Quantity mismatch - Invoice: {line_item.invoice_quantity}, Entry: {line_item.entry_print_quantity} (may be merged lines)"
                 else:
+                    # Could not extract numbers
                     quantity_status = "QUESTIONABLE"
-                    quantity_assessment = f"Quantity mismatch - Invoice: {line_item.invoice_quantity}, Entry: {line_item.entry_print_quantity} (may be merged lines)"
+                    quantity_assessment = f"Could not parse quantities - Invoice: {line_item.invoice_quantity}, Entry: {line_item.entry_print_quantity}"
             
             print(f"       → {quantity_status}", flush=True)
             
-            # ===== CHECK 4: GST Exemption =====
-            print(f"    [4/4] GST Exemption...", flush=True)
+            # ===== CHECK 4 (or 3 for NZ): GST Exemption =====
+            check_num = "[4/4]" if region == "AU" else "[3/3]"
+            print(f"    {check_num} GST Exemption...", flush=True)
             gst_status = "N/A"
             gst_assessment = "No GST exemption claimed"
             
@@ -1020,7 +1155,7 @@ Return a JSON object with a "line_items" array containing all extracted line ite
     not_applicable = sum(1 for v in validations if v.overall_status == "N/A")
     
     print(f"\n" + "=" * 80, flush=True)
-    print(f"✅ Line Item Validation Complete (4 checks per line)", flush=True)
+    print(f"✅ Line Item Validation Complete ({total_checks} checks per line)", flush=True)
     print(f"   Total lines: {total}", flush=True)
     print(f"   ✅ PASS: {passed}", flush=True)
     print(f"   ❌ FAIL: {failed}", flush=True)
