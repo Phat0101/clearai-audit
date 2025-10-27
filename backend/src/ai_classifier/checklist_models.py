@@ -74,9 +74,12 @@ class TariffLineItem(BaseModel):
     tariff_code: str = Field(..., description="8-digit tariff classification code from entry print")
     stat_code: str = Field(..., description="2-digit statistical code from entry print")
     full_code: str = Field(..., description="Complete 10-digit code (tariff + stat)")
-    quantity: str = Field(..., description="Quantity and unit from invoice (e.g., '5 PCS', '10.5 KG')")
+    invoice_quantity: str = Field(..., description="Quantity and unit from commercial invoice (e.g., '5 PCS', '10.5 KG')")
+    entry_print_quantity: str = Field(..., description="Quantity and unit from entry print (e.g., '5 PCS', '10.5 KG')")
     unit_price: str = Field(..., description="Unit price from invoice (e.g., 'USD 25.00')")
     total_value: str = Field(..., description="Total line value from invoice (e.g., 'USD 125.00')")
+    concession_bylaw: str | None = Field(None, description="Tariff concession or by-law number from entry print (e.g., '1700581', 'Schedule 4'). Set to None or empty if no concession claimed.")
+    gst_exemption: bool = Field(False, description="Whether GST exemption is claimed for this line in entry print")
     
     
 class TariffLineItemsOutput(BaseModel):
@@ -84,17 +87,46 @@ class TariffLineItemsOutput(BaseModel):
     line_items: List[TariffLineItem] = Field(..., description="List of all line items with descriptions and tariff codes")
 
 
+class LineItemCheck(BaseModel):
+    """Individual check result for a line item."""
+    check_name: str = Field(..., description="Name of the check (e.g., 'Tariff Classification & Stat code', 'Tariff/Bylaw Concession', 'Quantity', 'GST Exemption')")
+    status: ChecklistStatus = Field(..., description="PASS/FAIL/QUESTIONABLE/N/A")
+    assessment: str = Field(..., description="Detailed assessment for this specific check")
+    
+
 class TariffLineValidation(BaseModel):
-    """Validation result for a single tariff line item."""
+    """Comprehensive validation result for a single tariff line item with all checks."""
     line_number: int = Field(..., description="Line item number")
     description: str = Field(..., description="Product description")
+    
+    # Tariff Classification Check
     extracted_tariff_code: str = Field(..., description="8-digit tariff code extracted from entry print")
     extracted_stat_code: str = Field(..., description="2-digit stat code extracted from entry print")
     suggested_tariff_code: str = Field(..., description="System-suggested 8-digit tariff code")
     suggested_stat_code: str = Field(..., description="System-suggested 2-digit stat code")
-    status: ChecklistStatus = Field(..., description="PASS if codes match, QUESTIONABLE if in alternatives, FAIL if no match, N/A if not applicable")
-    assessment: str = Field(..., description="Detailed assessment including reasoning")
-    other_suggested_codes: List[str] = Field(default_factory=list, description="Other suggested codes for reference")
+    tariff_classification_status: ChecklistStatus = Field(..., description="Status for tariff classification check")
+    tariff_classification_assessment: str = Field(..., description="Assessment for tariff classification")
+    other_suggested_codes: List[str] = Field(default_factory=list, description="Other suggested tariff codes")
+    
+    # Concession/Bylaw Check
+    claimed_concession: str | None = Field(None, description="Concession or by-law number claimed in entry print")
+    concession_status: ChecklistStatus = Field(..., description="Status for concession validation")
+    concession_assessment: str = Field(..., description="Assessment for concession check")
+    concession_link: str | None = Field(None, description="TCO/Schedule 4 reference link if applicable")
+    
+    # Quantity Check
+    invoice_quantity: str = Field(..., description="Quantity from commercial invoice")
+    entry_print_quantity: str = Field(..., description="Quantity from entry print")
+    quantity_status: ChecklistStatus = Field(..., description="Status for quantity validation")
+    quantity_assessment: str = Field(..., description="Assessment for quantity check")
+    
+    # GST Exemption Check
+    gst_exemption_claimed: bool = Field(..., description="Whether GST exemption is claimed")
+    gst_exemption_status: ChecklistStatus = Field(..., description="Status for GST exemption check")
+    gst_exemption_assessment: str = Field(..., description="Assessment for GST exemption")
+    
+    # Overall Status (worst of all checks)
+    overall_status: ChecklistStatus = Field(..., description="Overall status: worst case of all checks (FAIL > QUESTIONABLE > PASS > N/A)")
 
 
 class ChecklistCategory(BaseModel):

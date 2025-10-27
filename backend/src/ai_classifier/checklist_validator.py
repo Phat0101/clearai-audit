@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import os
 import asyncio
+import aiohttp
 from pathlib import Path
 from typing import Dict, Any, List
 from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.models.gemini import GeminiModel, ThinkingConfig
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .checklist_models import (
     Region,
@@ -33,6 +34,217 @@ from .checklist_models import (
 class BatchValidationOutput(BaseModel):
     """Output model for batch validation of multiple checks in one LLM call."""
     validations: List[ChecklistValidationOutput]
+
+
+class ConcessionComparisonOutput(BaseModel):
+    """Output model for concession description comparison."""
+    status: str = Field(..., description="PASS, FAIL, or QUESTIONABLE")
+    assessment: str = Field(..., description="Brief explanation of the decision (2-3 sentences)")
+
+
+# Helper function for tariff concession lookup
+async def lookup_tariff_concession(tariff_code: str, claimed_concession: str | None = None) -> Dict[str, Any]:
+    """
+    Look up tariff concession information from Clear.AI API using tariff code.
+    
+    Args:
+        tariff_code: The 8-digit tariff code (e.g., "49119990")
+        claimed_concession: Optional claimed TC/bylaw number to filter for (e.g., "TC 0614117")
+        
+    Returns:
+        Dictionary with concession information including results and any errors
+    """
+    if not tariff_code or tariff_code.strip() == "":
+        return {"error": "No tariff code provided", "results": []}
+    
+    # Clean the tariff code (extract just digits)
+    clean_tariff = ''.join(filter(str.isdigit, tariff_code))
+    
+    if not clean_tariff:
+        return {"error": "Invalid tariff code format", "results": []}
+    
+    # Debug: Log what we're searching for
+    print(f"         API Lookup: Searching for TCO using tariff code '{clean_tariff}' (claimed: '{claimed_concession}')", flush=True)
+    
+    # Use the tariff concessions search endpoint
+    api_url = f"https://api.clear.ai/api/v1/au_tariff/tcos/search/?q={clean_tariff}"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    return {"error": f"API request failed with status {response.status}", "results": []}
+                
+                data = await response.json()
+                
+                # Debug: Log response structure
+                print(f"         API Response type: {type(data).__name__}, length: {len(data) if isinstance(data, (list, dict)) else 'N/A'}", flush=True)
+                
+                # Handle both dict and list responses
+                if isinstance(data, list):
+                    # API returns list directly
+                    results = data
+                elif isinstance(data, dict):
+                    # API returns dict with results key
+                    results = data.get("results", [])
+                else:
+                    return {"error": f"Unexpected API response type: {type(data)}", "results": []}
+                
+                # If a specific concession is claimed, filter results to find it
+                filtered_results = results
+                if claimed_concession:
+                    # Extract TC/instrument number from claimed concession
+                    claimed_number = ''.join(filter(str.isdigit, claimed_concession))
+                    
+                    # Filter results that match the claimed concession
+                    filtered_results = []
+                    for result in results:
+                        if not isinstance(result, dict):
+                            continue
+                            
+                        instrument_no = result.get("instrument_no", "")
+                        instrument_type = result.get("instrument_type", "")
+                        
+                        # Match if the instrument number matches
+                        if claimed_number and instrument_no and claimed_number == instrument_no:
+                            filtered_results.append(result)
+                        # Or if the full instrument string matches (e.g., "TC 0614117")
+                        elif f"{instrument_type} {instrument_no}".upper() == claimed_concession.upper():
+                            filtered_results.append(result)
+                
+                return {
+                    "tariff_code": clean_tariff,
+                    "claimed_concession": claimed_concession,
+                    "results": filtered_results if claimed_concession else results,
+                    "all_results": results,  # Keep all results for reference
+                    "found": len(filtered_results if claimed_concession else results) > 0,
+                    "api_url": api_url
+                }
+                
+    except asyncio.TimeoutError:
+        return {"error": "API request timed out", "results": []}
+    except Exception as e:
+        import traceback
+        return {"error": f"API error: {str(e)} | Traceback: {traceback.format_exc()}", "results": []}
+
+
+# Cache for concession comparison agent
+_concession_agent: Agent | None = None
+
+
+def _get_concession_agent() -> Agent:
+    """Instantiate (or return cached) Gemini agent for concession comparison."""
+    global _concession_agent
+    
+    if _concession_agent is not None:
+        return _concession_agent
+    
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise EnvironmentError("GEMINI_API_KEY environment variable is required for Gemini agent")
+
+    model = GeminiModel(
+        "gemini-2.5-pro",
+        provider=GoogleGLAProvider(api_key=api_key),
+    )
+
+    system_prompt = """
+You are a customs tariff concession expert for Australian imports.
+
+Your task is to determine if an item qualifies for a claimed tariff concession by comparing descriptions.
+
+Rules:
+- PASS: The item clearly matches the concession description (same product type, characteristics, use case)
+- FAIL: The item clearly does NOT match the concession description (different product entirely)
+- QUESTIONABLE: Uncertain match - similar but unclear, or technical specifications needed
+
+Be strict but reasonable. The item must genuinely qualify for the concession.
+"""
+
+    _concession_agent = Agent(
+        model=model,
+        instructions=system_prompt,
+        output_type=ConcessionComparisonOutput,
+        retries=1,
+        model_settings={"temperature": 0.1},
+    )
+    
+    return _concession_agent
+
+
+# Helper function to compare item description with concession descriptions using LLM
+async def _compare_concession_descriptions(
+    item_description: str,
+    concession_results: List[Dict[str, Any]],
+    bylaw_number: str
+) -> Dict[str, str]:
+    """
+    Use LLM to compare the line item description with Schedule 4 concession descriptions.
+    
+    Args:
+        item_description: The product description from the invoice
+        concession_results: List of concession records from the API
+        bylaw_number: The claimed by-law/TCO number
+        
+    Returns:
+        Dictionary with "status" (PASS/FAIL/QUESTIONABLE) and "assessment" (explanation)
+    """
+    if not concession_results:
+        return {
+            "status": "FAIL",
+            "assessment": f"Concession {bylaw_number} found but no description data available"
+        }
+    
+    # Get the concession comparison agent
+    agent = _get_concession_agent()
+    
+    # Build comparison prompt with concession details
+    concession_descriptions = []
+    for idx, result in enumerate(concession_results, 1):
+        heading = result.get("heading", "N/A")
+        description = result.get("description", "").replace("<br>", "\n")
+        instrument_no = result.get("instrument_no", "N/A")
+        instrument_type = result.get("instrument_type", "N/A")
+        
+        concession_descriptions.append(
+            f"Result {idx}:\n"
+            f"  Heading: {heading}\n"
+            f"  Instrument: {instrument_type} {instrument_no}\n"
+            f"  Description: {description}\n"
+        )
+    
+    prompt = f"""
+Compare the item description with the Schedule 4 concession description to determine if the concession applies.
+
+**Item Description (from invoice)**:
+{item_description}
+
+**Claimed Concession**: {bylaw_number}
+
+**Concession Descriptions (from Schedule 4 database)**:
+{''.join(concession_descriptions)}
+
+**Your Task**:
+Determine if the item matches the concession criteria and return:
+- status: "PASS", "FAIL", or "QUESTIONABLE"
+- assessment: Brief explanation (2-3 sentences) with specific reasons
+"""
+    
+    try:
+        # Run with structured output
+        result = await agent.run(prompt)
+        comparison: ConcessionComparisonOutput = result.output
+        
+        return {
+            "status": comparison.status.upper(),
+            "assessment": f"Concession {bylaw_number}: {comparison.assessment}"
+        }
+            
+    except Exception as e:
+        return {
+            "status": "QUESTIONABLE",
+            "assessment": f"Concession {bylaw_number} comparison error: {str(e)}"
+        }
 
 
 # System prompt for batch checklist validation
@@ -91,7 +303,7 @@ Your task is to extract and match line items from the Commercial Invoice and Ent
 **Your Responsibilities**:
 1. Analyze the Commercial Invoice to extract ALL line items with:
    - Product descriptions
-   - Quantities and units
+   - Quantities and units (invoice_quantity)
    - Unit prices
    - Total values (line totals)
 
@@ -99,11 +311,15 @@ Your task is to extract and match line items from the Commercial Invoice and Ent
    - Tariff classification codes (8 digits)
    - Statistical codes (2 digits)
    - Complete 10-digit codes (tariff + stat)
+   - Quantities and units (entry_print_quantity) - may be merged or different from invoice
+   - Tariff concession or by-law number (e.g., "1700581", "Schedule 4", "TCO XXXXX") - set to null if not claimed
+   - GST exemption indicator (true/false) - check if GST exemption is claimed for this line
 
 3. Match line items between the two documents based on:
    - Line item order and position
    - Product descriptions
    - Quantities and values
+   - Note: Entry print may merge multiple invoice lines into one line
 
 4. Return a structured list of ALL line items with:
    - Sequential line numbers (starting from 1)
@@ -111,9 +327,12 @@ Your task is to extract and match line items from the Commercial Invoice and Ent
    - Tariff code (8 digits) from entry print
    - Statistical code (2 digits) from entry print
    - Full 10-digit code
-   - Quantity and unit
-   - Unit price
-   - Total value
+   - invoice_quantity: Quantity and unit from COMMERCIAL INVOICE
+   - entry_print_quantity: Quantity and unit from ENTRY PRINT (may differ or be merged)
+   - Unit price from invoice
+   - Total value from invoice
+   - concession_bylaw: Tariff concession or by-law number from entry print (null if not claimed)
+   - gst_exemption: Boolean indicating if GST exemption is claimed
 
 **Important Guidelines**:
 - Extract ALL line items from both documents
@@ -122,6 +341,9 @@ Your task is to extract and match line items from the Commercial Invoice and Ent
 - Keep descriptions exactly as they appear in the invoice
 - Include currency symbols in prices (e.g., "USD 25.00")
 - Format quantities with units (e.g., "5 PCS", "10.5 KG")
+- Extract BOTH invoice_quantity AND entry_print_quantity separately
+- Look for concession/bylaw numbers in entry print (column headers like "TCO", "Concession", "By-law")
+- Check for GST exemption indicators in entry print
 - If a line item appears in one document but not the other, include it with "NOT FOUND" for missing data
 
 **Critical**:
@@ -129,6 +351,7 @@ Your task is to extract and match line items from the Commercial Invoice and Ent
 - Line numbers should be sequential starting from 1
 - Match items based on order, description similarity, and values
 - Be thorough and precise in your extraction
+- Extract concession_bylaw and gst_exemption information carefully from entry print
 """
 
 
@@ -486,29 +709,37 @@ Extract ALL line items from the Commercial Invoice and Entry Print documents pro
 
 **Documents Provided**:
 1. COMMERCIAL INVOICE DOCUMENT - Contains product descriptions, quantities, prices
-2. ENTRY PRINT DOCUMENT - Contains tariff codes and statistical codes
+2. ENTRY PRINT DOCUMENT - Contains tariff codes, statistical codes, concessions, quantities, and GST info
 
 **Your Task**:
 - Extract ALL line items from BOTH documents
-- Match each invoice line item with its corresponding entry print tariff code
+- Match each invoice line item with its corresponding entry print line
 - Return a complete list with:
   * Line numbers (sequential, starting from 1)
-  * Description from invoice
+  * Description from commercial invoice
   * 8-digit tariff code from entry print
   * 2-digit statistical code from entry print
   * Complete 10-digit code (tariff + stat)
-  * Quantity and unit
-  * Unit price
-  * Total value
+  * invoice_quantity: Quantity and unit from COMMERCIAL INVOICE
+  * entry_print_quantity: Quantity and unit from ENTRY PRINT (may be merged or different)
+  * Unit price from invoice
+  * Total value from invoice
+  * concession_bylaw: Tariff concession or by-law number from entry print (null/empty if not claimed)
+  * gst_exemption: Boolean - true if GST exemption is claimed in entry print, false otherwise
 
 **Instructions**:
 - If documents show different numbers of lines, include ALL lines found
+- Entry print may merge multiple invoice lines - extract BOTH quantities separately
 - Match lines based on order, descriptions, and values
 - Keep descriptions exactly as shown in invoice
 - Format codes as strings (e.g., "12345678" for tariff, "01" for stat)
 - Include currency in prices (e.g., "USD 125.00")
+- Look for concession/TCO/by-law columns in entry print (e.g., "1700581", "Schedule 4")
+- Check for GST exemption indicators in entry print (columns like "GST", "Exemption", or special codes)
+- Set concession_bylaw to null if no concession is claimed
+- Set gst_exemption to false if no GST exemption is indicated
 
-Return a JSON object with a "line_items" array containing all extracted line items.
+Return a JSON object with a "line_items" array containing all extracted line items with ALL fields.
 """
     message_parts.append(prompt)
     
@@ -544,11 +775,15 @@ Return a JSON object with a "line_items" array containing all extracted line ite
         print(f"❌ Failed to extract tariff line items: {e}", flush=True)
         raise
     
-    # Step 2: Classify each line item using the AU tariff classifier
+    # Step 2: Validate each line item with 4 checks
     print(f"\n" + "=" * 80, flush=True)
-    print(f"🤖 TARIFF LINE CLASSIFICATION - Job {job_id}", flush=True)
+    print(f"🤖 LINE ITEM VALIDATION - Job {job_id}", flush=True)
     print(f"=" * 80, flush=True)
-    print(f"Classifying {len(tariff_output.line_items)} line items using tariff classifier...", flush=True)
+    print(f"Validating {len(tariff_output.line_items)} line items with 4 checks each:", flush=True)
+    print(f"  1. Tariff Classification & Stat Code", flush=True)
+    print(f"  2. Tariff/Bylaw Concession", flush=True)
+    print(f"  3. Quantity Consistency", flush=True)
+    print(f"  4. GST Exemption", flush=True)
     
     # Only support AU region for now
     if region != "AU":
@@ -571,102 +806,221 @@ Return a JSON object with a "line_items" array containing all extracted line ite
             "summary": {"total": 0, "passed": 0, "failed": 0, "questionable": 0, "not_applicable": 0}
         }
     
-    # Classify each line item
+    # Validate each line item with ALL checks
     validations: List[TariffLineValidation] = []
     
     for line_item in tariff_output.line_items:
-        print(f"\n  Classifying Line {line_item.line_number}: {line_item.description[:60]}...", flush=True)
+        print(f"\n  Validating Line {line_item.line_number}: {line_item.description[:60]}...", flush=True)
         
         try:
-            # Create Item for classifier
+            # ===== CHECK 1: Tariff Classification & Stat Code =====
+            print(f"    [1/4] Tariff Classification...", flush=True)
             item = Item(
                 id=f"line_{line_item.line_number}",
                 description=line_item.description,
                 supplier_name=None
             )
             
-            # Classify the item
             classification_result, usage = await _classify_single_item(item)
             
-            # Compare codes
             extracted_tariff = line_item.tariff_code
             extracted_stat = line_item.stat_code
             suggested_tariff = classification_result.best_suggested_hs_code
             suggested_stat = classification_result.best_suggested_stat_code
             
-            # Determine status
-            status = "FAIL"
-            assessment_parts = []
+            # Determine tariff classification status
+            tariff_status = "FAIL"
+            tariff_assessment_parts = []
             
-            # Check if best match
             if extracted_tariff == suggested_tariff and extracted_stat == suggested_stat:
-                status = "PASS"
-                assessment_parts.append(f"Exact match")
+                tariff_status = "PASS"
+                tariff_assessment_parts.append(f"Exact match: {extracted_tariff}.{extracted_stat}")
             else:
-                # Check if in other suggested codes
                 match_found = False
                 for alt_code in classification_result.other_suggested_codes:
                     if extracted_tariff == alt_code.hs_code and extracted_stat == alt_code.stat_code:
-                        status = "QUESTIONABLE"
+                        tariff_status = "QUESTIONABLE"
                         match_found = True
-                        assessment_parts.append(f"Partial match")
+                        tariff_assessment_parts.append(f"Partial match in alternatives")
                         break
                 
                 if not match_found:
-                    status = "FAIL"
-                    assessment_parts.append(f"No match")
+                    tariff_status = "FAIL"
+                    tariff_assessment_parts.append(f"No match. Expected: {suggested_tariff}.{suggested_stat}, Found: {extracted_tariff}.{extracted_stat}")
             
-            # Add classification reasoning
-            assessment_parts.append(f"{classification_result.reasoning}")
+            tariff_assessment_parts.append(f"Reasoning: {classification_result.reasoning}")
+            tariff_assessment = "\n".join(tariff_assessment_parts)
             
-            assessment = "\n".join(assessment_parts)
+            other_codes = [f"{sc.hs_code}.{sc.stat_code}" for sc in classification_result.other_suggested_codes]
             
-            # Build other suggested codes list
-            other_codes = [
-                f"{sc.hs_code}.{sc.stat_code}" 
-                for sc in classification_result.other_suggested_codes
-            ]
+            print(f"       → {tariff_status}", flush=True)
+            
+            # ===== CHECK 2: Tariff/Bylaw Concession =====
+            print(f"    [2/4] Concession/Bylaw...", flush=True)
+            concession_status = "N/A"
+            concession_assessment = "No concession claimed"
+            concession_link = None
+            
+            if line_item.concession_bylaw and line_item.concession_bylaw.strip():
+                # Concession is claimed, verify it using the tariff code
+                print(f"       Checking concession: {line_item.concession_bylaw} for tariff {extracted_tariff}", flush=True)
+                concession_data = await lookup_tariff_concession(
+                    tariff_code=extracted_tariff,
+                    claimed_concession=line_item.concession_bylaw
+                )
+                
+                if "error" in concession_data and concession_data.get("results", []) == []:
+                    concession_status = "FAIL"
+                    concession_assessment = f"Concession {line_item.concession_bylaw} claimed but lookup failed. Error: {concession_data['error']}"
+                elif concession_data.get("found"):
+                    # Concession found in database, now compare descriptions using LLM
+                    # Don't include API URL in output
+                    results = concession_data.get("results", [])
+                    all_results_count = len(concession_data.get("all_results", []))
+                    
+                    # Use LLM to compare item description with concession descriptions
+                    print(f"       Found {len(results)} matching concession(s) (out of {all_results_count} for this tariff)", flush=True)
+                    print(f"       Comparing descriptions with LLM...", flush=True)
+                    comparison_result = await _compare_concession_descriptions(
+                        line_item.description,
+                        results,
+                        line_item.concession_bylaw
+                    )
+                    
+                    concession_status = comparison_result["status"]
+                    concession_assessment = comparison_result["assessment"]
+                    # Keep link as None - don't expose API URLs in output
+                else:
+                    # No matching concession found for this tariff code
+                    all_results_count = len(concession_data.get("all_results", []))
+                    if all_results_count > 0:
+                        concession_status = "FAIL"
+                        concession_assessment = f"Concession {line_item.concession_bylaw} claimed but not found for tariff {extracted_tariff}. Found {all_results_count} other concession(s) for this tariff, but none match the claimed TC."
+                    else:
+                        concession_status = "FAIL"
+                        concession_assessment = f"Concession {line_item.concession_bylaw} claimed but no concessions available for tariff {extracted_tariff}"
+            
+            print(f"       → {concession_status}", flush=True)
+            
+            # ===== CHECK 3: Quantity Validation =====
+            print(f"    [3/4] Quantity...", flush=True)
+            quantity_status = "PASS"
+            quantity_assessment = f"Invoice qty: {line_item.invoice_quantity}, Entry qty: {line_item.entry_print_quantity}"
+            
+            # Simple quantity comparison (you can make this more sophisticated)
+            if line_item.invoice_quantity.lower().replace(" ", "") == line_item.entry_print_quantity.lower().replace(" ", ""):
+                quantity_status = "PASS"
+                quantity_assessment = f"Quantities match: {line_item.invoice_quantity}"
+            elif "NOT FOUND" in line_item.invoice_quantity or "NOT FOUND" in line_item.entry_print_quantity:
+                quantity_status = "FAIL"
+                quantity_assessment = f"Quantity missing - Invoice: {line_item.invoice_quantity}, Entry: {line_item.entry_print_quantity}"
+            else:
+                # Extract numbers for comparison
+                import re
+                invoice_nums = re.findall(r'\d+\.?\d*', line_item.invoice_quantity)
+                entry_nums = re.findall(r'\d+\.?\d*', line_item.entry_print_quantity)
+                
+                if invoice_nums and entry_nums and float(invoice_nums[0]) == float(entry_nums[0]):
+                    quantity_status = "PASS"
+                    quantity_assessment = f"Quantities match: {line_item.invoice_quantity} ≈ {line_item.entry_print_quantity}"
+                else:
+                    quantity_status = "QUESTIONABLE"
+                    quantity_assessment = f"Quantity mismatch - Invoice: {line_item.invoice_quantity}, Entry: {line_item.entry_print_quantity} (may be merged lines)"
+            
+            print(f"       → {quantity_status}", flush=True)
+            
+            # ===== CHECK 4: GST Exemption =====
+            print(f"    [4/4] GST Exemption...", flush=True)
+            gst_status = "N/A"
+            gst_assessment = "No GST exemption claimed"
+            
+            if line_item.gst_exemption:
+                # GST exemption is claimed - would need to verify against concession or other rules
+                # For now, we'll mark as QUESTIONABLE if claimed (requires manual review)
+                gst_status = "QUESTIONABLE"
+                gst_assessment = "GST exemption claimed - requires manual verification against concession eligibility"
+            
+            print(f"       → {gst_status}", flush=True)
+            
+            # ===== Determine Overall Status (worst case) =====
+            status_priority = {"FAIL": 4, "QUESTIONABLE": 3, "PASS": 2, "N/A": 1}
+            all_statuses = [tariff_status, concession_status, quantity_status, gst_status]
+            overall_status = max(all_statuses, key=lambda s: status_priority[s])
             
             validation = TariffLineValidation(
                 line_number=line_item.line_number,
                 description=line_item.description,
+                # Tariff classification
                 extracted_tariff_code=extracted_tariff,
                 extracted_stat_code=extracted_stat,
                 suggested_tariff_code=suggested_tariff,
                 suggested_stat_code=suggested_stat,
-                status=status,
-                assessment=assessment,
-                other_suggested_codes=other_codes
+                tariff_classification_status=tariff_status,
+                tariff_classification_assessment=tariff_assessment,
+                other_suggested_codes=other_codes,
+                # Concession
+                claimed_concession=line_item.concession_bylaw,
+                concession_status=concession_status,
+                concession_assessment=concession_assessment,
+                concession_link=concession_link,
+                # Quantity
+                invoice_quantity=line_item.invoice_quantity,
+                entry_print_quantity=line_item.entry_print_quantity,
+                quantity_status=quantity_status,
+                quantity_assessment=quantity_assessment,
+                # GST
+                gst_exemption_claimed=line_item.gst_exemption,
+                gst_exemption_status=gst_status,
+                gst_exemption_assessment=gst_assessment,
+                # Overall
+                overall_status=overall_status
             )
             
             validations.append(validation)
-            print(f"    ✓ Line {line_item.line_number}: {status}", flush=True)
+            print(f"    ✅ Line {line_item.line_number} Overall: {overall_status}", flush=True)
             
         except Exception as classify_error:
-            print(f"    ❌ Classification failed for Line {line_item.line_number}: {classify_error}", flush=True)
-            # Add a FAIL validation for this line
+            print(f"    ❌ Validation failed for Line {line_item.line_number}: {classify_error}", flush=True)
+            # Add a FAIL validation for this line with all required fields
             validation = TariffLineValidation(
                 line_number=line_item.line_number,
                 description=line_item.description,
+                # Tariff classification
                 extracted_tariff_code=line_item.tariff_code,
                 extracted_stat_code=line_item.stat_code,
                 suggested_tariff_code="ERROR",
                 suggested_stat_code="ER",
-                status="FAIL",
-                assessment=f"Classification error: {str(classify_error)}",
-                other_suggested_codes=[]
+                tariff_classification_status="FAIL",
+                tariff_classification_assessment=f"Validation error: {str(classify_error)}",
+                other_suggested_codes=[],
+                # Concession
+                claimed_concession=line_item.concession_bylaw,
+                concession_status="FAIL",
+                concession_assessment="Validation failed",
+                concession_link=None,
+                # Quantity
+                invoice_quantity=line_item.invoice_quantity,
+                entry_print_quantity=line_item.entry_print_quantity,
+                quantity_status="FAIL",
+                quantity_assessment="Validation failed",
+                # GST
+                gst_exemption_claimed=line_item.gst_exemption,
+                gst_exemption_status="FAIL",
+                gst_exemption_assessment="Validation failed",
+                # Overall
+                overall_status="FAIL"
             )
             validations.append(validation)
     
-    # Calculate summary
+    # Calculate summary based on overall_status
     total = len(validations)
-    passed = sum(1 for v in validations if v.status == "PASS")
-    failed = sum(1 for v in validations if v.status == "FAIL")
-    questionable = sum(1 for v in validations if v.status == "QUESTIONABLE")
-    not_applicable = sum(1 for v in validations if v.status == "N/A")
+    passed = sum(1 for v in validations if v.overall_status == "PASS")
+    failed = sum(1 for v in validations if v.overall_status == "FAIL")
+    questionable = sum(1 for v in validations if v.overall_status == "QUESTIONABLE")
+    not_applicable = sum(1 for v in validations if v.overall_status == "N/A")
     
     print(f"\n" + "=" * 80, flush=True)
-    print(f"✅ Tariff Line Classification Complete", flush=True)
+    print(f"✅ Line Item Validation Complete (4 checks per line)", flush=True)
     print(f"   Total lines: {total}", flush=True)
     print(f"   ✅ PASS: {passed}", flush=True)
     print(f"   ❌ FAIL: {failed}", flush=True)

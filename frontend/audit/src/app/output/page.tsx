@@ -40,7 +40,7 @@ interface ExpandedDirectories {
 interface ValidationResult {
   check_id: string;
   auditing_criteria: string;
-  status: 'PASS' | 'FAIL' | 'QUESTIONABLE';
+  status: 'PASS' | 'FAIL' | 'QUESTIONABLE' | 'N/A';
   assessment: string;
   source_document: string;
   target_document: string;
@@ -51,13 +51,30 @@ interface ValidationResult {
 interface TariffLineValidation {
   line_number: number;
   description: string;
+  // Tariff Classification Check
   extracted_tariff_code: string;
   extracted_stat_code: string;
   suggested_tariff_code: string;
   suggested_stat_code: string;
-  status: 'PASS' | 'FAIL' | 'QUESTIONABLE';
-  assessment: string;
+  tariff_classification_status: 'PASS' | 'FAIL' | 'QUESTIONABLE' | 'N/A';
+  tariff_classification_assessment: string;
   other_suggested_codes: string[];
+  // Concession Check
+  claimed_concession: string | null;
+  concession_status: 'PASS' | 'FAIL' | 'QUESTIONABLE' | 'N/A';
+  concession_assessment: string;
+  concession_link: string | null;
+  // Quantity Check
+  invoice_quantity: string;
+  entry_print_quantity: string;
+  quantity_status: 'PASS' | 'FAIL' | 'QUESTIONABLE' | 'N/A';
+  quantity_assessment: string;
+  // GST Exemption Check
+  gst_exemption_claimed: boolean;
+  gst_exemption_status: 'PASS' | 'FAIL' | 'QUESTIONABLE' | 'N/A';
+  gst_exemption_assessment: string;
+  // Overall Status
+  overall_status: 'PASS' | 'FAIL' | 'QUESTIONABLE' | 'N/A';
 }
 
 interface ValidationData {
@@ -69,12 +86,14 @@ interface ValidationData {
     passed: number;
     failed: number;
     questionable: number;
+    not_applicable?: number;
   };
   tariff_summary?: {
     total: number;
     passed: number;
     failed: number;
     questionable: number;
+    not_applicable?: number;
   };
 }
 
@@ -223,6 +242,9 @@ export default function OutputPage() {
           sheetData.push(['Passed', validationData.summary.passed]);
           sheetData.push(['Failed', validationData.summary.failed]);
           sheetData.push(['Questionable', validationData.summary.questionable]);
+          if (validationData.summary.not_applicable) {
+            sheetData.push(['N/A', validationData.summary.not_applicable]);
+          }
           sheetData.push([]);
 
           // Add header checks section
@@ -281,52 +303,72 @@ export default function OutputPage() {
             sheetData.push([]);
           }
 
-          // Add tariff line checks section if available
+          // Add Line Data section if available
           if (validationData.tariff_line_checks && validationData.tariff_line_checks.length > 0) {
-            sheetData.push(['TARIFF LINE CHECKS']);
-            if (validationData.tariff_summary) {
-              sheetData.push(['Summary:', `Total: ${validationData.tariff_summary.total}, Passed: ${validationData.tariff_summary.passed}, Failed: ${validationData.tariff_summary.failed}, Questionable: ${validationData.tariff_summary.questionable}`]);
-            }
-            sheetData.push([
-              'Line #',
-              'Description',
-              'Status',
-              'Declared Code',
-              'Declared Stat',
-              'Recommended Code',
-              'Recommended Stat',
-              'Other Recommended Codes',
-              'Assessment',
-            ]);
-
-            validationData.tariff_line_checks.forEach((check) => {
+            sheetData.push([]);
+            sheetData.push(['Line Data']);
+            sheetData.push([]);
+            
+            // Add each line with its 4 checks
+            validationData.tariff_line_checks.forEach((line) => {
+              // Line header
+              sheetData.push([`Line ${line.line_number}`]);
               sheetData.push([
-                check.line_number,
-                check.description,
-                check.status,
-                check.extracted_tariff_code,
-                check.extracted_stat_code,
-                check.suggested_tariff_code,
-                check.suggested_stat_code,
-                check.other_suggested_codes.join(', '),
-                check.assessment,
+                'Auditing Criteria',
+                'Results',
+                'Comments'
               ]);
+              
+              // Check 1: Tariff Classification & Stat code
+              sheetData.push([
+                'Tariff Classification & Stat code',
+                line.tariff_classification_status,
+                `Declared: ${line.extracted_tariff_code}.${line.extracted_stat_code} | Suggested: ${line.suggested_tariff_code}.${line.suggested_stat_code} | ${line.tariff_classification_assessment}`
+              ]);
+              
+              // Check 2: Tariff/Bylaw Concession
+              const concessionComment = line.claimed_concession 
+                ? `Claimed: ${line.claimed_concession} | ${line.concession_assessment}`
+                : line.concession_assessment;
+              sheetData.push([
+                'Tariff/Bylaw Concession',
+                line.concession_status,
+                concessionComment
+              ]);
+              
+              // Check 3: Quantity
+              sheetData.push([
+                'Quantity',
+                line.quantity_status,
+                `Invoice: ${line.invoice_quantity} | Entry: ${line.entry_print_quantity} | ${line.quantity_assessment}`
+              ]);
+              
+              // Check 4: GST Exemption
+              const gstComment = line.gst_exemption_claimed
+                ? `GST exemption claimed | ${line.gst_exemption_assessment}`
+                : line.gst_exemption_assessment;
+              sheetData.push([
+                'GST Exemption',
+                line.gst_exemption_status,
+                gstComment
+              ]);
+              
+              sheetData.push([]);
             });
           }
 
           // Create sheet for this job
           const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
 
-          // Set column widths for better readability (handles both header/valuation and tariff formats)
+          // Set column widths for better readability
           worksheet['!cols'] = [
-            { wch: 50 }, // Criteria / Line # / Description
-            { wch: 12 }, // Status (both formats)
-            { wch: 50 }, // Assessment / Declared Code
-            { wch: 15 }, // Source Document / Declared Stat
-            { wch: 15 }, // Target Document / Recommended Code
-            { wch: 15 }, // Source Value / Recommended Stat
-            { wch: 30 }, // Target Value / Other Codes
-            { wch: 50 }, // (tariff only) Assessment
+            { wch: 45 }, // Auditing Criteria
+            { wch: 15 }, // Results/Status
+            { wch: 80 }, // Comments/Assessment
+            { wch: 18 }, // Source Document
+            { wch: 18 }, // Target Document
+            { wch: 18 }, // Source Value
+            { wch: 18 }, // Target Value
           ];
 
           // Apply styling to cells
@@ -360,6 +402,11 @@ export default function OutputPage() {
                   cell.s = {
                     fill: { fgColor: { rgb: "FFFF00" } }, // Yellow
                     font: { bold: true, color: { rgb: "000000" } }
+                  };
+                } else if (status === 'N/A') {
+                  cell.s = {
+                    fill: { fgColor: { rgb: "F0F0F0" } }, // Light gray
+                    font: { bold: true, color: { rgb: "666666" } }
                   };
                 }
               }

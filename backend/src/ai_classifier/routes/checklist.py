@@ -24,11 +24,11 @@ else:
         CHECKLISTS_DIR = docker_path
         logger.info(f"Using Docker checklist directory: {CHECKLISTS_DIR}")
     else:
-        # Dev: from checklist.py -> routes -> ai_classifier -> src -> backend -> project root
+        # Dev: from checklist.py -> routes -> ai_classifier -> src -> backend
         current_file = Path(__file__).resolve()
-        # Go up: routes -> ai_classifier -> src -> backend -> project root
-        backend_parent = current_file.parent.parent.parent.parent.parent
-        CHECKLISTS_DIR = backend_parent / "checklists"
+        # Go up: routes -> ai_classifier -> src -> backend
+        backend_dir = current_file.parent.parent.parent.parent
+        CHECKLISTS_DIR = backend_dir / "checklists"
         logger.info(f"Using dev checklist directory: {CHECKLISTS_DIR}")
 
 
