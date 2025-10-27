@@ -241,15 +241,14 @@ export default function OutputPage() {
           const sheetData: (string | number)[][] = [];
 
           // Add summary section
-          sheetData.push(['VALIDATION SUMMARY']);
           sheetData.push(['Job ID', jobId]);
-          sheetData.push(['Total Checks', validationData.summary.total]);
-          sheetData.push(['Passed', validationData.summary.passed]);
-          sheetData.push(['Failed', validationData.summary.failed]);
-          sheetData.push(['Questionable', validationData.summary.questionable]);
-          if (validationData.summary.not_applicable) {
-            sheetData.push(['N/A', validationData.summary.not_applicable]);
-          }
+          // sheetData.push(['Total Checks', validationData.summary.total]);
+          // sheetData.push(['Passed', validationData.summary.passed]);
+          // sheetData.push(['Failed', validationData.summary.failed]);
+          // sheetData.push(['Questionable', validationData.summary.questionable]);
+          // if (validationData.summary.not_applicable) {
+          //   sheetData.push(['N/A', validationData.summary.not_applicable]);
+          // }
           sheetData.push([]);
 
           // Add header checks section

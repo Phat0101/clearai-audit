@@ -363,7 +363,7 @@ export default function Home() {
                       className="w-full"
                       size="sm"
                     >
-                      {uploading ? 'Grouping...' : 'Group Files'}
+                      {uploading ? 'Grouping...' : 'Group Jobs to preview'}
                     </Button>
                     
                     <Button
@@ -446,7 +446,7 @@ export default function Home() {
               <Card>
                 <CardContent className="pt-6 pb-32 text-center">
                   <p className="text-sm text-muted-foreground">
-                    Upload and process files to see grouping results here
+                    Upload and group jobs to see job grouping results here
                   </p>
                 </CardContent>
               </Card>
