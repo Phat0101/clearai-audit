@@ -101,6 +101,7 @@ export default function OutputPage() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<ExpandedDirectories>({});
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -200,6 +201,8 @@ export default function OutputPage() {
   };
 
   const exportRunToExcel = async (runPath: string, runName: string) => {
+    setExporting(true);
+    setError(null);
     try {
       // First, get the list of files in the run directory
       const response = await fetch(`${API_URL}/api/output/browse?path=${encodeURIComponent(runPath)}`);
@@ -453,6 +456,8 @@ export default function OutputPage() {
       XLSX.writeFile(workbook, filename);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to export to Excel');
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -549,7 +554,32 @@ export default function OutputPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background p-4">
+    <div className="min-h-screen bg-background p-4 relative">
+      {/* Loading Overlay for Excel Export */}
+      {exporting && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center">
+          <Card className="w-96">
+            <CardContent className="pt-6 pb-6">
+              <div className="flex flex-col items-center gap-4">
+                <div className="relative">
+                  <div className="h-16 w-16 rounded-full border-4 border-primary/20"></div>
+                  <div className="absolute top-0 left-0 h-16 w-16 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
+                </div>
+                <div className="text-center">
+                  <h3 className="text-lg font-semibold mb-2">Exporting to Excel</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Please wait while we generate your file...
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    This may take a moment for large runs
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+      
       <div className="max-w-7xl mx-auto">
         <header className="mb-6">
           <div className="flex items-center justify-between">

@@ -1,11 +1,9 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
-import * as XLSX from 'xlsx-js-style';
 
 interface GroupedJob {
   job_id: string;
@@ -99,9 +97,22 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [result, setResult] = useState<UploadResponse | null>(null);
-  const [processResult, setProcessResult] = useState<ProcessResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [region, setRegion] = useState<'AU' | 'NZ'>('AU');
+
+  // Prevent page refresh/close during processing
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (processing) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [processing]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -157,7 +168,6 @@ export default function Home() {
     setUploading(true);
     setError(null);
     setResult(null);
-    setProcessResult(null);
 
     try {
       const formData = new FormData();
@@ -196,7 +206,6 @@ export default function Home() {
     setProcessing(true);
     setError(null);
     setResult(null);
-    setProcessResult(null);
 
     try {
       const formData = new FormData();
@@ -216,12 +225,13 @@ export default function Home() {
       }
 
       const data: ProcessResponse = await response.json();
-      setProcessResult(data);
       console.log('Processing successful:', data);
+      
+      // Redirect to output page after successful processing
+      window.location.href = '/output';
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Processing failed');
       console.error('Processing error:', err);
-    } finally {
       setProcessing(false);
     }
   };
@@ -229,203 +239,36 @@ export default function Home() {
   const clearAll = () => {
     setFiles([]);
     setResult(null);
-    setProcessResult(null);
     setError(null);
   };
 
-  const exportToExcel = () => {
-    if (!processResult) return;
-
-    const workbook = XLSX.utils.book_new();
-
-    processResult.jobs.forEach((job) => {
-      if (!job.validation_results) return;
-
-      const sheetData: (string | number)[][] = [];
-
-      // Add summary section
-      sheetData.push(['VALIDATION SUMMARY']);
-      sheetData.push(['Job ID', job.job_id]);
-      sheetData.push(['Total Checks', job.validation_results.summary.total]);
-      sheetData.push(['Passed', job.validation_results.summary.passed]);
-      sheetData.push(['Failed', job.validation_results.summary.failed]);
-      sheetData.push(['Questionable', job.validation_results.summary.questionable]);
-      sheetData.push([]);
-
-      // Add header checks section
-      if (job.validation_results.header.length > 0) {
-        sheetData.push(['HEADER CHECKS']);
-        sheetData.push([
-          'Criteria',
-          'Status',
-          'Assessment',
-          'Source Document',
-          'Target Document',
-          'Source Value',
-          'Target Value',
-        ]);
-
-        job.validation_results.header.forEach((check) => {
-          sheetData.push([
-            check.auditing_criteria,
-            check.status,
-            check.assessment,
-            check.source_document,
-            check.target_document,
-            check.source_value,
-            check.target_value,
-          ]);
-        });
-
-        sheetData.push([]);
-      }
-
-      // Add valuation checks section
-      if (job.validation_results.valuation.length > 0) {
-        sheetData.push(['VALUATION CHECKS']);
-        sheetData.push([
-          'Criteria',
-          'Status',
-          'Assessment',
-          'Source Document',
-          'Target Document',
-          'Source Value',
-          'Target Value',
-        ]);
-
-        job.validation_results.valuation.forEach((check) => {
-          sheetData.push([
-            check.auditing_criteria,
-            check.status,
-            check.assessment,
-            check.source_document,
-            check.target_document,
-            check.source_value,
-            check.target_value,
-          ]);
-        });
-        
-        sheetData.push([]);
-      }
-
-      // Add tariff line checks section if available
-      if (job.validation_results.tariff_line_checks && job.validation_results.tariff_line_checks.length > 0) {
-        sheetData.push(['TARIFF LINE CHECKS']);
-        if (job.validation_results.tariff_summary) {
-          sheetData.push(['Summary:', `Total: ${job.validation_results.tariff_summary.total}, Passed: ${job.validation_results.tariff_summary.passed}, Failed: ${job.validation_results.tariff_summary.failed}, Questionable: ${job.validation_results.tariff_summary.questionable}`]);
-        }
-        sheetData.push([
-          'Line #',
-          'Description',
-          'Status',
-          'Declared Code',
-          'Declared Stat',
-          'Recommended Code',
-          'Recommended Stat',
-          'Other Recommended Codes',
-          'Assessment',
-        ]);
-
-        job.validation_results.tariff_line_checks.forEach((check) => {
-          sheetData.push([
-            check.line_number,
-            check.description,
-            check.status,
-            check.extracted_tariff_code,
-            check.extracted_stat_code,
-            check.suggested_tariff_code,
-            check.suggested_stat_code,
-            check.other_suggested_codes.join(', '),
-            check.assessment,
-          ]);
-        });
-      }
-
-      // Create sheet for this job
-      const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
-
-      // Set column widths for better readability (handles both header/valuation and tariff formats)
-      worksheet['!cols'] = [
-        { wch: 50 }, // Criteria / Line # / Description
-        { wch: 12 }, // Status (both formats)
-        { wch: 50 }, // Assessment / Declared Code
-        { wch: 15 }, // Source Document / Declared Stat
-        { wch: 15 }, // Target Document / Recommended Code
-        { wch: 15 }, // Source Value / Recommended Stat
-        { wch: 30 }, // Target Value / Other Codes
-        { wch: 50 }, // (tariff only) Assessment
-      ];
-
-      // Apply styling to cells
-      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
-      const rowHeights: { [key: number]: number } = {};
-      
-      for (let rowNum = range.s.r; rowNum <= range.e.r; rowNum++) {
-        for (let colNum = range.s.c; colNum <= range.e.c; colNum++) {
-          const cellAddress = XLSX.utils.encode_cell({ r: rowNum, c: colNum });
-          const cell = worksheet[cellAddress];
-          
-          if (!cell) continue;
-
-          // Initialize cell style if not exists
-          if (!cell.s) cell.s = {};
-
-          // Color code status cells (column B - index 1)
-          if (colNum === 1 && cell.v) {
-            const status = String(cell.v).toUpperCase();
-            if (status === 'PASS') {
-              cell.s = {
-                fill: { fgColor: { rgb: "92D050" } }, // Green
-                font: { bold: true, color: { rgb: "FFFFFF" } }
-              };
-            } else if (status === 'FAIL') {
-              cell.s = {
-                fill: { fgColor: { rgb: "FF0000" } }, // Red
-                font: { bold: true, color: { rgb: "FFFFFF" } }
-              };
-            } else if (status === 'QUESTIONABLE') {
-              cell.s = {
-                fill: { fgColor: { rgb: "FFFF00" } }, // Yellow
-                font: { bold: true, color: { rgb: "000000" } }
-              };
-            }
-          }
-
-          // Make assessment cells wrap text (column C for header/valuation, column H for tariff)
-          if ((colNum === 2 || colNum === 7) && cell.v && String(cell.v).length > 50) {
-            cell.s = {
-              ...cell.s,
-              alignment: { wrapText: true, vertical: 'top' }
-            };
-            // Set row height for assessment rows (approximately 3 lines, taller for tariff)
-            rowHeights[rowNum] = colNum === 7 ? 60 : 45;
-          }
-        }
-      }
-
-      // Apply row heights
-      if (Object.keys(rowHeights).length > 0) {
-        worksheet['!rows'] = [];
-        for (let i = 0; i <= range.e.r; i++) {
-          worksheet['!rows'][i] = rowHeights[i] ? { hpt: rowHeights[i] } : {};
-        }
-      }
-
-      // Add the sheet with job ID as name
-      const sheetName = `Job_${job.job_id}`.substring(0, 31); // Excel sheet name limit is 31 chars
-      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
-    });
-
-    // Generate filename with timestamp
-    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-    const filename = `audit_results_${processResult.run_id}_${timestamp}.xlsx`;
-
-    // Write file
-    XLSX.writeFile(workbook, filename);
-  };
-
   return (
-    <div className="h-screen bg-background flex flex-col p-4">
+    <div className="h-screen bg-background flex flex-col p-4 relative">
+      {/* Loading Overlay */}
+      {processing && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center">
+          <Card className="w-96">
+            <CardContent className="pt-6 pb-6">
+              <div className="flex flex-col items-center gap-4">
+                <div className="relative">
+                  <div className="h-16 w-16 rounded-full border-4 border-primary/20"></div>
+                  <div className="absolute top-0 left-0 h-16 w-16 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
+                </div>
+                <div className="text-center">
+                  <h3 className="text-lg font-semibold mb-2">Processing Documents</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Please wait while we analyze your files...
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Do not close or refresh this page
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+      
       <div className="max-w-7xl mx-auto w-full flex flex-col h-full">
         <header className="mb-4 shrink-0">
           <div className="flex items-center justify-between">
@@ -594,11 +437,11 @@ export default function Home() {
 
           {/* Right Column - Results (2/3) */}
           <div className="col-span-2 space-y-4 overflow-y-auto pr-2">
-            {!result && !processResult && (
+            {!result && (
               <Card>
                 <CardContent className="pt-6 pb-32 text-center">
                   <p className="text-sm text-muted-foreground">
-                    Upload and process files to see results here
+                    Upload and process files to see grouping results here
                   </p>
                 </CardContent>
               </Card>
@@ -615,7 +458,7 @@ export default function Home() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {result.summary.jobs.map((job, index) => (
-                    <Card key={index}>
+                    <Card key={index} className="gap-0">
                       <CardHeader className="pb-0">
                         <div className="flex items-center justify-between">
                           <CardTitle className="text-base">
@@ -637,174 +480,6 @@ export default function Home() {
                       </CardContent>
                     </Card>
                   ))}
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Processing Results with Classification */}
-            {processResult && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <CardTitle>Processing Results</CardTitle>
-                      <CardDescription>
-                        Run ID: {processResult.run_id} · {processResult.total_files} files processed
-                      </CardDescription>
-                    </div>
-                    {processResult.jobs.some(job => job.validation_results) && (
-                      <Button 
-                        onClick={exportToExcel}
-                        variant="outline"
-                        size="sm"
-                      >
-                        Export to Excel
-                      </Button>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="text-xs text-muted-foreground">
-                    <span className="font-medium">Output Path:</span>{' '}
-                    <code className="text-foreground break-all">{processResult.run_path}</code>
-                  </div>
-                  
-                  <Separator />
-                  
-                  <div className="space-y-3">
-                    {processResult.jobs.map((job, index) => (
-                      <Card key={index}>
-                        <CardHeader className="pb-0">
-                          <div className="flex items-center justify-between">
-                            <CardTitle className="text-base">
-                              Job {job.job_id}
-                            </CardTitle>
-                            <Badge variant="secondary">
-                              {job.file_count} files
-                            </Badge>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="space-y-3">
-                          {job.classified_files.map((file, fileIndex) => (
-                            <div key={fileIndex} className="space-y-2 pb-3 border-b last:border-0 last:pb-0">
-                              <div>
-                                <p className="text-sm font-medium">
-                                  {file.original_filename}
-                                </p>
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  {file.saved_filename}
-                                </p>
-                              </div>
-                              
-                              <div className="flex items-center gap-2">
-                                <Badge variant="outline">
-                                  {file.document_type.replace('_', ' ')}
-                                </Badge>
-                                {file.extracted_data && (
-                                  <Badge variant="secondary">
-                                    Data Extracted
-                                  </Badge>
-                                )}
-                              </div>
-                              
-                              {file.extracted_data && (
-                                <details className="mt-2">
-                                  <summary className="text-xs font-medium cursor-pointer hover:underline">
-                                    View extracted data ({Object.keys(file.extracted_data).length} fields)
-                                  </summary>
-                                  <pre className="mt-2 p-3 bg-muted rounded-md text-xs overflow-x-auto max-h-60">
-                                    {JSON.stringify(file.extracted_data, null, 2)}
-                                  </pre>
-                                </details>
-                              )}
-                            </div>
-                          ))}
-                          
-                          {/* Validation Results */}
-                          {job.validation_results && (
-                            <div className="pt-3 border-t space-y-3">
-                              <div className="flex items-center justify-between">
-                                <h4 className="text-sm font-semibold">Checklist Validation</h4>
-                                <div className="flex gap-2">
-                                  <Badge variant="default" className="bg-green-600">
-                                    {job.validation_results.summary.passed} PASS
-                                  </Badge>
-                                  <Badge variant="destructive">
-                                    {job.validation_results.summary.failed} FAIL
-                                  </Badge>
-                                  <Badge variant="outline">
-                                    {job.validation_results.summary.questionable} ?
-                                  </Badge>
-                                </div>
-                              </div>
-                              
-                              <details>
-                                <summary className="text-xs font-medium cursor-pointer hover:underline">
-                                  View validation details ({job.validation_results.summary.total} checks)
-                                </summary>
-                                <div className="mt-2 space-y-2">
-                                  {/* Header Checks */}
-                                  <div>
-                                    <h5 className="text-xs font-semibold mb-1">Header Checks ({job.validation_results.header.length})</h5>
-                                    <div className="space-y-1">
-                                      {job.validation_results.header.map((check, i) => (
-                                        <div key={i} className="text-xs p-2 bg-muted rounded">
-                                          <div className="flex items-center justify-between mb-1">
-                                            <span className="font-medium">{check.auditing_criteria}</span>
-                                            <Badge 
-                                              variant={check.status === 'PASS' ? 'default' : check.status === 'FAIL' ? 'destructive' : 'outline'}
-                                              className={check.status === 'PASS' ? 'bg-green-600' : ''}
-                                            >
-                                              {check.status}
-                                            </Badge>
-                                          </div>
-                                          <p className="text-muted-foreground">{check.assessment}</p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                  
-                                  {/* Valuation Checks */}
-                                  <div>
-                                    <h5 className="text-xs font-semibold mb-1">Valuation Checks ({job.validation_results.valuation.length})</h5>
-                                    <div className="space-y-1">
-                                      {job.validation_results.valuation.map((check, i) => (
-                                        <div key={i} className="text-xs p-2 bg-muted rounded">
-                                          <div className="flex items-center justify-between mb-1">
-                                            <span className="font-medium">{check.auditing_criteria}</span>
-                                            <Badge 
-                                              variant={check.status === 'PASS' ? 'default' : check.status === 'FAIL' ? 'destructive' : 'outline'}
-                                              className={check.status === 'PASS' ? 'bg-green-600' : ''}
-                                            >
-                                              {check.status}
-                                            </Badge>
-                                          </div>
-                                          <p className="text-muted-foreground">{check.assessment}</p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                </div>
-                              </details>
-                            </div>
-                          )}
-                          
-                          <div className="pt-3 border-t">
-                            <p className="text-xs text-muted-foreground">
-                              <span className="font-medium">Job folder:</span>{' '}
-                              <code>{job.job_folder}</code>
-                            </p>
-                            {job.validation_file && (
-                              <p className="text-xs text-muted-foreground mt-1">
-                                <span className="font-medium">Validation file:</span>{' '}
-                                <code>{job.validation_file.split('/').pop()}</code>
-                              </p>
-                            )}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
                 </CardContent>
               </Card>
             )}
