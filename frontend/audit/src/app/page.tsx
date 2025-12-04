@@ -92,6 +92,8 @@ interface ProcessResponse {
   jobs: ProcessedJob[];
 }
 
+type InputMode = 'upload' | 'local';
+
 export default function Home() {
   const router = useRouter();
   const [files, setFiles] = useState<File[]>([]);
@@ -101,6 +103,7 @@ export default function Home() {
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [region, setRegion] = useState<'AU' | 'NZ'>('AU');
+  const [inputMode, setInputMode] = useState<InputMode>('upload');
 
   // Prevent page refresh/close during processing
   useEffect(() => {
@@ -162,6 +165,12 @@ export default function Home() {
   };
 
   const handleUpload = async () => {
+    if (inputMode === 'local') {
+      // Handle local input folder
+      await handleGroupLocalInput();
+      return;
+    }
+
     if (files.length === 0) {
       setError('Please select at least one PDF file');
       return;
@@ -199,8 +208,35 @@ export default function Home() {
     }
   };
 
+  const handleGroupLocalInput = async () => {
+    setUploading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const endpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${endpoint}/api/group-local-input`, {
+        method: 'GET',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to process local input folder');
+      }
+
+      const data: UploadResponse = await response.json();
+      setResult(data);
+      console.log('Local input grouping successful:', data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to process local input folder');
+      console.error('Local input error:', err);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleProcessBatch = async () => {
-    if (files.length === 0) {
+    if (inputMode === 'upload' && files.length === 0) {
       setError('Please select at least one PDF file');
       return;
     }
@@ -210,16 +246,26 @@ export default function Home() {
     setResult(null);
 
     try {
-      const formData = new FormData();
-      files.forEach(file => {
-        formData.append('files', file);
-      });
-
       const endpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${endpoint}/api/process-batch?region=${region}`, {
-        method: 'POST',
-        body: formData,
-      });
+      let response: Response;
+
+      if (inputMode === 'local') {
+        // Process local input folder
+        response = await fetch(`${endpoint}/api/process-local-input?region=${region}`, {
+          method: 'POST',
+        });
+      } else {
+        // Process uploaded files
+        const formData = new FormData();
+        files.forEach(file => {
+          formData.append('files', file);
+        });
+
+        response = await fetch(`${endpoint}/api/process-batch?region=${region}`, {
+          method: 'POST',
+          body: formData,
+        });
+      }
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -282,6 +328,13 @@ export default function Home() {
             </h1>
             <nav className="flex gap-2">
               <Button 
+                variant="default" 
+                size="sm"
+                onClick={() => router.push('/nz-audit')}
+              >
+                🇳🇿 NZ Audit
+              </Button>
+              <Button 
                 variant="outline" 
                 size="sm"
                 onClick={() => router.push('/output')}
@@ -307,39 +360,93 @@ export default function Home() {
                 <CardTitle>Upload Documents</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {/* Dropzone */}
-                <div
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  className={`
-                    border-2 border-dashed rounded-lg p-8 text-center transition-colors
-                    ${isDragging 
-                      ? 'border-primary bg-accent' 
-                      : 'border-border hover:border-foreground/50'
-                    }
-                  `}
-                >
-                  <p className="text-sm font-medium mb-2">
-                    Drop PDF files here
-                  </p>                  
-                  <input
-                    type="file"
-                    multiple
-                    accept=".pdf"
-                    onChange={handleFileInput}
-                    className="hidden"
-                    id="file-input"
-                  />
-                  <label htmlFor="file-input">
-                    <Button asChild variant="outline" size="sm">
-                      <span>Select Files</span>
+                {/* Input Mode Selector */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Input Source</label>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant={inputMode === 'upload' ? 'default' : 'outline'}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => {
+                        setInputMode('upload');
+                        setFiles([]);
+                        setResult(null);
+                        setError(null);
+                      }}
+                    >
+                      Upload Files
                     </Button>
-                  </label>
+                    <Button
+                      type="button"
+                      variant={inputMode === 'local' ? 'default' : 'outline'}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => {
+                        setInputMode('local');
+                        setFiles([]);
+                        setResult(null);
+                        setError(null);
+                      }}
+                    >
+                      Local Input Folder
+                    </Button>
+                  </div>
+                  {inputMode === 'local' && (
+                    <p className="text-xs text-muted-foreground">
+                      Process PDFs from the input/ folder (unpacks zip files automatically)
+                    </p>
+                  )}
                 </div>
 
+                {/* Dropzone - Only show for upload mode */}
+                {inputMode === 'upload' && (
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className={`
+                      border-2 border-dashed rounded-lg p-8 text-center transition-colors
+                      ${isDragging 
+                        ? 'border-primary bg-accent' 
+                        : 'border-border hover:border-foreground/50'
+                      }
+                    `}
+                  >
+                    <p className="text-sm font-medium mb-2">
+                      Drop PDF files here
+                    </p>                  
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf"
+                      onChange={handleFileInput}
+                      className="hidden"
+                      id="file-input"
+                    />
+                    <label htmlFor="file-input">
+                      <Button asChild variant="outline" size="sm">
+                        <span>Select Files</span>
+                      </Button>
+                    </label>
+                  </div>
+                )}
+
+                {/* Local Input Info */}
+                {inputMode === 'local' && (
+                  <div className="border-2 border-dashed rounded-lg p-8 text-center bg-muted/50">
+                    <p className="text-sm font-medium mb-2">
+                      Local Input Folder
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Files will be read from the input/ folder
+                    </p>
+                  </div>
+                )}
+
                 {/* Region Selector */}
-                {files.length > 0 && (
+                {(files.length > 0 || inputMode === 'local') && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Region</label>
                     <select 
@@ -354,7 +461,7 @@ export default function Home() {
                 )}
 
                 {/* Action Buttons */}
-                {files.length > 0 && (
+                {(files.length > 0 || inputMode === 'local') && (
                   <div className="space-y-2">
                     <Button
                       onClick={handleUpload}
@@ -368,7 +475,7 @@ export default function Home() {
                     
                     <Button
                       onClick={handleProcessBatch}
-                      disabled={uploading || processing}
+                      disabled={uploading || processing || (inputMode === 'upload' && files.length === 0)}
                       className="w-full"
                       size="sm"
                     >
@@ -393,7 +500,7 @@ export default function Home() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-2 max-h-[calc(100vh-32rem)] overflow-y-auto">
+                  <div className="space-y-2 max-h-[calc(100vh-40rem)] overflow-y-auto">
                     {files.map((file, index) => (
                       <div
                         key={index}
@@ -441,7 +548,7 @@ export default function Home() {
           </div>
 
           {/* Right Column - Results (2/3) */}
-          <div className="col-span-2 space-y-4 overflow-y-auto pr-2">
+          <div className="col-span-2 space-y-4 overflow-y-auto pr-2 pb-4">
             {!result && (
               <Card>
                 <CardContent className="pt-6 pb-32 text-center">
@@ -461,7 +568,7 @@ export default function Home() {
                     {result.summary.total_jobs} jobs · {result.summary.total_files} files
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="space-y-3 pb-4 max-h-[calc(100vh-220px)] overflow-y-auto">
                   {result.summary.jobs.map((job, index) => (
                     <Card key={index} className="gap-0">
                       <CardHeader className="pb-0">

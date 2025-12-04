@@ -14,8 +14,9 @@ import aiohttp
 from pathlib import Path
 from typing import Dict, Any, List
 from pydantic_ai import Agent, BinaryContent
-from pydantic_ai.models.gemini import GeminiModel, ThinkingConfig
-from pydantic_ai.providers.google_gla import GoogleGLAProvider
+from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.models.gemini import ThinkingConfig
+from pydantic_ai.providers.google import GoogleProvider
 
 from pydantic import BaseModel, Field
 
@@ -143,9 +144,9 @@ def _get_concession_agent() -> Agent:
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY environment variable is required for Gemini agent")
 
-    model = GeminiModel(
+    model = GoogleModel(
         "gemini-2.5-pro",
-        provider=GoogleGLAProvider(api_key=api_key),
+        provider=GoogleProvider(api_key=api_key),
     )
 
     system_prompt = """
@@ -421,9 +422,9 @@ def _get_tariff_extractor_agent(region: Region = "AU") -> Agent:
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY environment variable is required for Gemini agent")
 
-    model = GeminiModel(
+    model = GoogleModel(
         "gemini-2.5-pro",
-        provider=GoogleGLAProvider(api_key=api_key),
+        provider=GoogleProvider(api_key=api_key),
     )
     
     # Use region-specific prompt
@@ -449,9 +450,9 @@ def _get_validator_agent() -> Agent:
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY environment variable is required for Gemini agent")
 
-    model = GeminiModel(
+    model = GoogleModel(
         "gemini-2.5-pro",
-        provider=GoogleGLAProvider(api_key=api_key),
+        provider=GoogleProvider(api_key=api_key),
     )
 
     _validator_agent = Agent(

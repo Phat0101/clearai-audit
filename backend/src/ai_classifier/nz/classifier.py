@@ -65,8 +65,9 @@ Constraints:
 
 
 from pydantic_ai import Agent
-from pydantic_ai.models.gemini import GeminiModel, ThinkingConfig
-from pydantic_ai.providers.google_gla import GoogleGLAProvider
+from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.models.gemini import ThinkingConfig
+from pydantic_ai.providers.google import GoogleProvider
 
 
 def _get_nz_agent():
@@ -74,9 +75,9 @@ def _get_nz_agent():
 	if not api_key:
 		raise RuntimeError("GEMINI_API_KEY or GOOGLE_API_KEY environment variable is required")
 
-	model = GeminiModel(
+	model = GoogleModel(
 		"gemini-2.5-pro",
-		provider=GoogleGLAProvider(api_key=api_key),
+		provider=GoogleProvider(api_key=api_key),
 	)
 
 	return Agent(

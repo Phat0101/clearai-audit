@@ -102,11 +102,14 @@ _EXEMPT_PATHS = {
     "/redoc",  # redoc (when DEBUG true)
     "/api/upload-batch",  # batch upload endpoint (no auth needed for now)
     "/api/process-batch",  # batch process endpoint (no auth needed for now)
+    "/api/group-local-input",  # local input grouping endpoint (no auth needed for now)
+    "/api/process-local-input",  # local input processing endpoint (no auth needed for now)
 }
 _EXEMPT_PREFIXES = [
     "/static/",  # static assets
     "/api/checklist/",  # checklist management (no auth needed for editor)
     "/api/output/",  # output browser (no auth needed for browsing results)
+    "/api/nz-audit/",  # NZ audit endpoints (no auth needed for now)
 ]
 
 
@@ -279,6 +282,10 @@ app.include_router(checklist_router)
 # Mount output directory browsing routes
 from .routes.output import router as output_router
 app.include_router(output_router)
+
+# Mount NZ audit routes
+from .routes.nz_audit import router as nz_audit_router
+app.include_router(nz_audit_router)
 
 # Health check endpoint
 @app.get("/health")

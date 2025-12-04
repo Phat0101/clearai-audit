@@ -127,16 +127,17 @@ def _get_or_create_agent():
             return _classifier_agent
 
         from pydantic_ai import Agent
-        from pydantic_ai.models.gemini import GeminiModel, ThinkingConfig
-        from pydantic_ai.providers.google_gla import GoogleGLAProvider
+        from pydantic_ai.models.google import GoogleModel
+        from pydantic_ai.models.gemini import ThinkingConfig
+        from pydantic_ai.providers.google import GoogleProvider
 
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY or GOOGLE_API_KEY environment variable is required")
 
-        model = GeminiModel(
+        model = GoogleModel(
             "gemini-2.5-pro",
-            provider=GoogleGLAProvider(api_key=api_key),
+            provider=GoogleProvider(api_key=api_key),
         )
 
         _classifier_agent = Agent(

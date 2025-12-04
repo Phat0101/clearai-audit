@@ -16,3 +16,5 @@ wheels/
 
 # Don't ignore frontend routes named 'output'
 !/frontend/**/output/
+
+input/

@@ -7,8 +7,8 @@ import os
 from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, BinaryContent
-from pydantic_ai.models.gemini import GeminiModel
-from pydantic_ai.providers.google_gla import GoogleGLAProvider
+from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.providers.google import GoogleProvider
 
 
 # Document type enum
@@ -67,9 +67,9 @@ def _get_document_classifier_agent() -> Agent:
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY or GOOGLE_API_KEY environment variable is required")
     
-    model = GeminiModel(
+    model = GoogleModel(
         "gemini-2.5-flash",
-        provider=GoogleGLAProvider(api_key=api_key),
+        provider=GoogleProvider(api_key=api_key),
     )
     
     return Agent(
