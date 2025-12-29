@@ -28,9 +28,10 @@ from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
 from .file_manager import get_next_run_id, create_run_directory, create_job_directory
+from .util.batch_processor import safe_copy_file
 
 # Maximum number of concurrent job workers
-MAX_CONCURRENT_JOBS = 10
+MAX_CONCURRENT_JOBS = 20
 
 # Marker file to indicate a job was successfully audited
 AUDIT_COMPLETE_MARKER = ".audit_complete"
@@ -191,11 +192,11 @@ class NZAuditHeaderValidation(BaseModel):
     
     invoice_number_correct: ValidationStatus = Field(
         ...,
-        description="Invoice Number Correct? - Check if invoice number matches between entry print and commercial invoice. Use 'No' if UNNUM/NONUM is used when actual invoice number exists"
+        description="Invoice Number Correct? - Check if invoice number on entry print is an EXACT match to the commercial invoice number. Only mark 'Yes' for exact character-for-character matches. Use 'No' if there is any difference (partial match, extra characters, missing characters, different format), or if UNNUM/NONUM is used when actual invoice number exists"
     )
     invoice_number_reasoning: str = Field(
         "",
-        description="Brief explanation for invoice number validation (e.g., 'Invoice number matches', 'Broker used UNNUM but invoice shows number 12345')"
+        description="Brief explanation for invoice number validation - state both invoice numbers found and explain if they are an exact match or not (e.g., 'Entry shows INV-12345, invoice shows INV-12345 - exact match', 'Entry shows 12345, invoice shows INV-12345 - NOT exact match')"
     )
     
     vfd_correct: ValidationStatus = Field(
@@ -243,22 +244,13 @@ class NZAuditHeaderValidation(BaseModel):
         description="Brief explanation for freight correctness validation"
     )
     
-    load_port_correct: ValidationStatus = Field(
-        ...,
-        description="Load Port Air/Sea correct? - Check if departure port matches"
-    )
-    load_port_reasoning: str = Field(
-        "",
-        description="Brief explanation for load port validation"
-    )
-    
     relationship_indicator_correct: ValidationStatus = Field(
         ...,
-        description="Relationship Indicator Correct? (Yes/No) - Check if buyer/seller relationship is correctly declared"
+        description="Relationship Indicator Correct? (Yes/No) - Check if buyer/seller relationship is correctly declared on the entry. If there is evidence of a potentially related party transaction (e.g., same company names, parent-subsidiary relationship, shared ownership, same director/principals, affiliated companies), the entry MUST declare the relationship. If a related party relationship exists but was NOT declared on the entry, mark as 'No'"
     )
     relationship_indicator_reasoning: str = Field(
         "",
-        description="Brief explanation for relationship indicator validation"
+        description="Brief explanation for relationship indicator validation - identify if parties appear related (same company names, affiliated entities, parent-subsidiary, shared ownership) and whether this was properly declared on the entry"
     )
 
     country_of_export_correct: ValidationStatus = Field(
@@ -354,11 +346,11 @@ For EACH validation, you must provide:
    - Reasoning: Explain what names you compared and the result
 
 3. **Invoice Number Correct?**:
-   - Check if invoice number on entry print matches the commercial invoice
-   - "No" if broker used UNNUM/NONUM when an actual invoice number exists
-   - "Yes" if correct number used or genuinely unnumbered
+   - Check if invoice number on entry print is an EXACT character-for-character match to the commercial invoice number
+   - "Yes" ONLY if the invoice numbers match exactly (same characters, same format, same case)
+   - "No" if there is ANY difference: partial matches, extra characters, missing characters, different format, or if broker used UNNUM/NONUM when an actual invoice number exists
    - "N/A" if not applicable
-   - Reasoning: State the invoice numbers found and whether they match
+   - Reasoning: State BOTH invoice numbers found and explicitly confirm if they are an exact match or explain the difference (e.g., 'Entry: INV-12345, Invoice: INV-12345 - exact match' or 'Entry: 12345, Invoice: INV-12345 - NOT exact match, different format')
 
 4. **VFD Correct?**:
    - Compare Value for Duty on entry print with invoice total
@@ -394,18 +386,13 @@ For EACH validation, you must provide:
    - "N/A" if freight is zero or for exports
    - Reasoning: State the freight amount found and whether it matches expectations
 
-9. **Load Port Air/Sea correct?**:
-   - Check if departure port matches between documents
-   - "Yes" if correct
-   - "No" if incorrect
-   - Reasoning: State the ports found in each document
-
-10. **Relationship Indicator Correct?**:
-    - Check if buyer/seller relationship is correctly declared
-    - "Yes" if correct
-    - "No" if incorrect
-    - "N/A" if not determinable
-    - Reasoning: Explain what relationship was declared and whether it appears correct
+9. **Relationship Indicator Correct?**:
+    - Check if buyer/seller relationship is correctly declared on the customs entry
+    - Look for evidence of related party transactions: same company names (or variations), parent-subsidiary relationship, shared ownership, same directors/principals, affiliated companies, same address, or any indication of common control
+    - "Yes" if either: (a) no relationship exists and none was declared, OR (b) a relationship exists AND it was properly declared on the entry
+    - "No" if a potentially related party relationship exists but was NOT declared on the entry (this is the critical error - undeclared related party transactions)
+    - "N/A" if not determinable from documents
+    - Reasoning: Identify any evidence of related parties (same company names, affiliations, shared ownership, etc.) and confirm whether this was properly declared on the entry. Example: 'Importer XYZ Ltd and Supplier XYZ International appear to be related (similar names/affiliated), but entry shows no relationship declared - should be marked as related party transaction'
 
 11. **Country of Export correct?**:
     - Validate the country of export matches between Invoice/AWB and Entry
@@ -465,7 +452,7 @@ def _get_nz_audit_agent() -> Agent:
         model=model,
         instructions=_NZ_AUDIT_SYSTEM_PROMPT,
         output_type=NZAuditBatchOutput,
-        retries=2,
+        retries=3,
         model_settings={
             "google_thinking_config": {"thinking_level": "HIGH"},
             "temperature": 0.1
@@ -528,8 +515,10 @@ async def run_nz_audit(
         for pdf_path in pdf_files:
             if pdf_path.exists():
                 dest = output_job_path / pdf_path.name
-                shutil.copy2(pdf_path, dest)
-                print(f"  📁 Copied: {pdf_path.name} → output", flush=True)
+                if safe_copy_file(pdf_path, dest):
+                    print(f"  📁 Copied: {pdf_path.name} → output", flush=True)
+                else:
+                    print(f"  ⚠️  Failed to copy: {pdf_path.name}", flush=True)
     
     # Build message parts - start with prompt
     prompt = f"""
@@ -593,7 +582,6 @@ The documents are attached below. Analyze them ALL together to cross-reference i
         print(f"   - Incoterm: {hv.incoterm_correct} ({hv.incoterm_reasoning[:60] if hv.incoterm_reasoning else 'No reasoning'})", flush=True)
         print(f"   - Freight Zero: {hv.freight_zero_if_inclusive_incoterm} ({hv.freight_zero_reasoning[:60] if hv.freight_zero_reasoning else 'No reasoning'})", flush=True)
         print(f"   - Freight Correct: {hv.freight_correct} ({hv.freight_correct_reasoning[:60] if hv.freight_correct_reasoning else 'No reasoning'})", flush=True)
-        print(f"   - Load Port: {hv.load_port_correct} ({hv.load_port_reasoning[:60] if hv.load_port_reasoning else 'No reasoning'})", flush=True)
         print(f"   - Relationship: {hv.relationship_indicator_correct} ({hv.relationship_indicator_reasoning[:60] if hv.relationship_indicator_reasoning else 'No reasoning'})", flush=True)
         print(f"   - Country of Export: {hv.country_of_export_correct} ({hv.country_of_export_reasoning[:60] if hv.country_of_export_reasoning else 'No reasoning'})", flush=True)
         print(f"   - Weight Correct: {hv.correct_weight_of_goods} ({hv.correct_weight_reasoning[:60] if hv.correct_weight_reasoning else 'No reasoning'})", flush=True)
@@ -630,7 +618,6 @@ def create_csv_row(audit_result: NZAuditResult) -> Dict[str, str]:
         hv.incoterm_correct,
         hv.freight_zero_if_inclusive_incoterm,
         hv.freight_correct,
-        hv.load_port_correct,
         hv.relationship_indicator_correct,
         hv.country_of_export_correct,
         hv.correct_weight_of_goods,
@@ -685,8 +672,8 @@ def create_csv_row(audit_result: NZAuditResult) -> Dict[str, str]:
         "Country of Export": hv.country_of_export_correct,
         "Country of Export reasoning": hv.country_of_export_reasoning,
         
-        "Load Port Air/Sea": hv.load_port_correct,
-        "Load Port reasoning": hv.load_port_reasoning,
+        "Load Port Air/Sea": "Yes",  # Not AI validated - defaults to Yes
+        "Load Port reasoning": "Not AI validated",
         "Relationship Indicator Correct Yes/No?": hv.relationship_indicator_correct,
         "Relationship Indicator reasoning": hv.relationship_indicator_reasoning,
         
@@ -738,7 +725,6 @@ def create_csv_file_with_headers(output_path: Path) -> Path:
             incoterm_correct="N/A",
             freight_zero_if_inclusive_incoterm="N/A",
             freight_correct="N/A",
-            load_port_correct="N/A",
             relationship_indicator_correct="N/A",
             country_of_export_correct="N/A",
             correct_weight_of_goods="N/A",
@@ -881,7 +867,6 @@ def create_xlsx_file_with_headers(output_path: Path) -> Path:
             incoterm_correct="N/A",
             freight_zero_if_inclusive_incoterm="N/A",
             freight_correct="N/A",
-            load_port_correct="N/A",
             relationship_indicator_correct="N/A",
             country_of_export_correct="N/A",
             correct_weight_of_goods="N/A",

@@ -11,6 +11,99 @@ import shutil
 from datetime import datetime
 
 
+def safe_copy_file(source: Path, dest: Path, max_retries: int = 3) -> bool:
+    """
+    Safely copy a file with verification and atomic operations.
+    
+    Uses atomic copy (copy to temp, then rename) to prevent corruption
+    if the operation is interrupted. Verifies file size after copy.
+    Handles file name collisions by adding a unique suffix.
+    
+    Args:
+        source: Source file path
+        dest: Destination file path
+        max_retries: Maximum number of retry attempts
+        
+    Returns:
+        True if copy was successful and verified, False otherwise
+    """
+    if not source.exists():
+        print(f"   ⚠️  Source file does not exist: {source}", flush=True)
+        return False
+    
+    # Get original file size for verification
+    try:
+        original_size = source.stat().st_size
+    except OSError as e:
+        print(f"   ⚠️  Cannot read source file size: {source} - {e}", flush=True)
+        return False
+    
+    # Handle file name collisions by adding a unique suffix
+    dest_base = dest.parent / dest.stem
+    dest_suffix = dest.suffix
+    counter = 1
+    final_dest = dest
+    
+    # Check if destination already exists and find unique name
+    while final_dest.exists():
+        final_dest = dest_base.parent / f"{dest_base.name}_{counter}{dest_suffix}"
+        counter += 1
+        if counter > 1000:  # Safety limit
+            print(f"   ⚠️  Too many file name collisions for {dest.name}", flush=True)
+            return False
+    
+    # Use atomic copy: copy to temp file first, then rename
+    temp_dest = final_dest.parent / f".tmp_{final_dest.name}"
+    
+    for attempt in range(max_retries):
+        try:
+            # Copy to temporary file first
+            shutil.copy2(source, temp_dest)
+            
+            # Verify copy was successful by checking file size
+            if not temp_dest.exists():
+                raise OSError("Temporary file was not created")
+            
+            copied_size = temp_dest.stat().st_size
+            if copied_size != original_size:
+                # Remove incomplete copy
+                try:
+                    temp_dest.unlink()
+                except OSError:
+                    pass
+                raise OSError(f"File size mismatch: original={original_size}, copied={copied_size}")
+            
+            # Atomic rename: move temp file to final destination
+            temp_dest.replace(final_dest)
+            
+            # Final verification
+            if not final_dest.exists():
+                raise OSError("Final file does not exist after rename")
+            
+            final_size = final_dest.stat().st_size
+            if final_size != original_size:
+                raise OSError(f"File size mismatch after rename: original={original_size}, final={final_size}")
+            
+            return True
+            
+        except (OSError, shutil.Error, PermissionError) as e:
+            # Clean up temp file on error
+            try:
+                if temp_dest.exists():
+                    temp_dest.unlink()
+            except OSError:
+                pass
+            
+            if attempt < max_retries - 1:
+                # Retry on transient errors
+                continue
+            else:
+                print(f"   ⚠️  Failed to copy {source.name} after {max_retries} attempts: {e}", flush=True)
+                return False
+    
+    return False
+
+
 def extract_job_id(filename: str) -> str:
     """
     Extract job ID from filename (leading number before first underscore or special char).
@@ -192,6 +285,8 @@ def get_input_folder_path() -> Path:
     return input_path
 
 
+
+
 def organize_grouped_files(
     grouped_jobs: Dict[str, List[Path]],
     base_folder: Path
@@ -206,6 +301,9 @@ def organize_grouped_files(
             file2.pdf
         job_0987654321/
             file1.pdf
+    
+    Uses safe copy operations with verification to prevent file corruption.
+    Handles file name collisions by adding unique suffixes.
     
     Args:
         grouped_jobs: Dictionary mapping job_id to list of file paths
@@ -223,24 +321,32 @@ def organize_grouped_files(
     print(f"   Grouped folder: {grouped_folder}", flush=True)
     
     total_copied = 0
+    total_failed = 0
     for job_id, job_files in grouped_jobs.items():
         # Create job folder
         job_folder = grouped_folder / f"job_{job_id}"
         job_folder.mkdir(parents=True, exist_ok=True)
         
-        # Copy files to job folder
+        # Copy files to job folder with verification
+        job_copied = 0
+        job_failed = 0
         for file_path in job_files:
-            try:
-                # Copy file to job folder, preserving original filename
-                dest_path = job_folder / file_path.name
-                shutil.copy2(file_path, dest_path)
+            dest_path = job_folder / file_path.name
+            if safe_copy_file(file_path, dest_path):
                 total_copied += 1
-            except (OSError, shutil.Error, PermissionError) as e:
-                print(f"   ⚠️  Error copying {file_path.name} to job_{job_id}: {e}", flush=True)
+                job_copied += 1
+            else:
+                total_failed += 1
+                job_failed += 1
         
-        print(f"   ✓ Job {job_id}: {len(job_files)} file(s) → {job_folder.name}/", flush=True)
+        status = f"✓ {job_copied} copied"
+        if job_failed > 0:
+            status += f", ⚠️ {job_failed} failed"
+        print(f"   {status} - Job {job_id}: {len(job_files)} file(s) → {job_folder.name}/", flush=True)
     
     print(f"\n✅ Organized {total_copied} file(s) into {len(grouped_jobs)} job folder(s)", flush=True)
+    if total_failed > 0:
+        print(f"   ⚠️  {total_failed} file(s) failed to copy (may be corrupted or inaccessible)", flush=True)
     print(f"   Location: {grouped_folder}", flush=True)
     
     return grouped_folder

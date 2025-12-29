@@ -330,6 +330,13 @@ export default function Home() {
               <Button 
                 variant="default" 
                 size="sm"
+                onClick={() => router.push('/au-audit')}
+              >
+                🇦🇺 AU Audit
+              </Button>
+              <Button 
+                variant="default" 
+                size="sm"
                 onClick={() => router.push('/nz-audit')}
               >
                 🇳🇿 NZ Audit
