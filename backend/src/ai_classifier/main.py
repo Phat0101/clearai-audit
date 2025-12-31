@@ -111,6 +111,7 @@ _EXEMPT_PREFIXES = [
     "/api/output/",  # output browser (no auth needed for browsing results)
     "/api/nz-audit/",  # NZ audit endpoints (no auth needed for now)
     "/api/au-audit/",  # AU audit endpoints (no auth needed for now)
+    "/api/nz-audit-summary/",  # NZ audit summary endpoints (no auth needed for now)
 ]
 
 
@@ -291,6 +292,10 @@ app.include_router(nz_audit_router)
 # Mount AU audit routes
 from .routes.au_audit import router as au_audit_router
 app.include_router(au_audit_router)
+
+# Mount NZ audit summary routes
+from .routes.nz_audit_summary import router as nz_audit_summary_router
+app.include_router(nz_audit_summary_router)
 
 # Health check endpoint
 @app.get("/health")

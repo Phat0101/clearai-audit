@@ -680,7 +680,7 @@ def create_csv_row(audit_result: NZAuditResult) -> Dict[str, str]:
         "Correct weight of goods": hv.correct_weight_of_goods,
         "Weight reasoning": hv.correct_weight_reasoning,
         
-        "Core value vs. repair value (where applicable)": "",
+        "Core value vs. repair value (where applicable)": "N/A",
         
         "CGO (for Exports, where applicable)": hv.cgo_correct,
         "CGO reasoning": hv.cgo_reasoning,

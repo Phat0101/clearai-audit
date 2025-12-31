@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 
 interface GroupedFolder {
   name: string;
@@ -96,6 +97,13 @@ export default function NZAuditPage() {
   const [error, setError] = useState<string | null>(null);
   const [jobList, setJobList] = useState<JobListResponse | null>(null);
   const [processingJob, setProcessingJob] = useState<string | null>(null);
+  
+  // Audit Summary Upload States
+  const [summaryFile, setSummaryFile] = useState<File | null>(null);
+  const [summaryMonth, setSummaryMonth] = useState('');
+  const [summaryUploading, setSummaryUploading] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load grouped folders on mount
   useEffect(() => {
@@ -273,6 +281,68 @@ export default function NZAuditPage() {
         return <Badge variant="secondary">N/A</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
+  // Handle summary file selection
+  const handleSummaryFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+        setSummaryError('Please upload an Excel file (.xlsx or .xls)');
+        setSummaryFile(null);
+        return;
+      }
+      setSummaryFile(file);
+      setSummaryError(null);
+    }
+  };
+
+  // Handle summary upload and download
+  const handleGenerateSummary = async () => {
+    if (!summaryFile) {
+      setSummaryError('Please select an Excel file');
+      return;
+    }
+
+    setSummaryUploading(true);
+    setSummaryError(null);
+
+    try {
+      const endpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const formData = new FormData();
+      formData.append('file', summaryFile);
+      formData.append('month', summaryMonth || '');
+
+      const response = await fetch(`${endpoint}/api/nz-audit-summary/generate`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to generate summary');
+      }
+
+      const data = await response.json();
+      
+      // Automatically download the generated summary
+      if (data.output_file) {
+        window.open(
+          `${endpoint}/api/nz-audit-summary/download?file_path=${encodeURIComponent(data.output_file)}`,
+          '_blank'
+        );
+      }
+
+      // Reset form
+      setSummaryFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : 'Failed to generate summary');
+    } finally {
+      setSummaryUploading(false);
     }
   };
 
@@ -538,6 +608,81 @@ export default function NZAuditPage() {
                 </CardContent>
               </Card>
             )}
+
+            {/* Audit Summary Generator */}
+            <Card className="border-blue-200 bg-blue-50/30">
+              <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  📊 Generate Audit Summary
+                </CardTitle>
+                <CardDescription>
+                  Upload completed audit Excel to generate accuracy & error summary
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium mb-2 block">
+                    Month (optional)
+                  </label>
+                  <Input
+                    type="text"
+                    placeholder="e.g., Jul-24"
+                    value={summaryMonth}
+                    onChange={(e) => setSummaryMonth(e.target.value)}
+                    className="bg-white"
+                  />
+                </div>
+                
+                <div>
+                  <label className="text-sm font-medium mb-2 block">
+                    Audited Excel File
+                  </label>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".xlsx,.xls"
+                    onChange={handleSummaryFileChange}
+                    className="block w-full text-sm text-gray-500
+                      file:mr-4 file:py-2 file:px-4
+                      file:rounded-md file:border-0
+                      file:text-sm file:font-semibold
+                      file:bg-blue-50 file:text-blue-700
+                      hover:file:bg-blue-100
+                      cursor-pointer"
+                  />
+                  {summaryFile && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Selected: {summaryFile.name}
+                    </p>
+                  )}
+                </div>
+
+                {summaryError && (
+                  <p className="text-sm text-destructive">{summaryError}</p>
+                )}
+
+                <Button
+                  onClick={handleGenerateSummary}
+                  disabled={!summaryFile || summaryUploading}
+                  className="w-full bg-blue-600 hover:bg-blue-700"
+                >
+                  {summaryUploading ? (
+                    <>
+                      <span className="animate-spin mr-2">⏳</span>
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      📥 Generate & Download Summary
+                    </>
+                  )}
+                </Button>
+
+                <p className="text-xs text-muted-foreground text-center">
+                  Calculates accuracy per broker and counts errors by category
+                </p>
+              </CardContent>
+            </Card>
           </div>
 
           {/* Right Column - Results */}
