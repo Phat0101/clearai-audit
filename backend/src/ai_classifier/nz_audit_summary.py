@@ -23,6 +23,11 @@ try:
 except ImportError as exc:
     raise ImportError("openpyxl is required for XLSX processing. Install with: pip install openpyxl") from exc
 
+try:
+    import xlrd
+except ImportError:
+    xlrd = None  # Optional: only needed for .xls files
+
 
 # Mapping of column headers to error category names (display names for the summary)
 # These match the validation columns in the NZ audit output
@@ -86,6 +91,41 @@ def find_column_index(headers: List[str], target_patterns: List[str]) -> int | N
             if pattern.lower() in normalized.lower():
                 return idx
     return None
+
+
+def read_xls_sheet(sheet) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """
+    Read all rows from a broker sheet in .xls format (using xlrd).
+
+    Args:
+        sheet: xlrd sheet object
+
+    Returns:
+        Tuple of (list of row dicts, list of headers)
+    """
+    rows = []
+    headers = []
+
+    if sheet.nrows == 0:
+        return rows, headers
+
+    # Read headers from first row
+    for col_idx in range(sheet.ncols):
+        cell_value = sheet.cell_value(0, col_idx)
+        headers.append(str(cell_value) if cell_value else "")
+
+    # Read data rows
+    for row_idx in range(1, sheet.nrows):
+        row_dict = {}
+        for col_idx in range(sheet.ncols):
+            if col_idx < len(headers):
+                row_dict[headers[col_idx]] = sheet.cell_value(row_idx, col_idx)
+
+        # Skip empty rows
+        if any(v for v in row_dict.values() if v):
+            rows.append(row_dict)
+
+    return rows, headers
 
 
 def read_broker_sheet(sheet) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -252,20 +292,35 @@ def process_audit_file(
     """
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
-    
-    # Load the workbook
-    wb = load_workbook(input_path, data_only=True)  # data_only=True to get calculated formula values
-    
+
+    # Detect file format and load appropriately
+    file_extension = input_path.suffix.lower()
+    is_xls = file_extension == ".xls"
+
+    if is_xls:
+        if xlrd is None:
+            raise ImportError("xlrd is required to read .xls files. Install with: pip install xlrd")
+        wb = xlrd.open_workbook(input_path)
+        sheet_names = wb.sheet_names()
+    else:
+        # .xlsx format - use openpyxl
+        wb = load_workbook(input_path, data_only=True)  # data_only=True to get calculated formula values
+        sheet_names = wb.sheetnames
+
     broker_results = {}
     all_errors = defaultdict(lambda: defaultdict(int))
-    
+
     # Process each sheet (skip Summary if present)
-    for sheet_name in wb.sheetnames:
+    for sheet_name in sheet_names:
         if sheet_name.lower() == "summary":
             continue
-        
-        sheet = wb[sheet_name]
-        rows, headers = read_broker_sheet(sheet)
+
+        if is_xls:
+            sheet = wb.sheet_by_name(sheet_name)
+            rows, headers = read_xls_sheet(sheet)
+        else:
+            sheet = wb[sheet_name]
+            rows, headers = read_broker_sheet(sheet)
         
         if not rows:
             continue

@@ -31,7 +31,11 @@ from .file_manager import get_next_run_id, create_run_directory, create_job_dire
 from .util.batch_processor import safe_copy_file
 
 # Maximum number of concurrent job workers
-MAX_CONCURRENT_JOBS = 20
+MAX_CONCURRENT_JOBS = 50
+
+# Retry settings for transient API failures
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 5  # seconds (exponential backoff: 5s, 10s, 20s)
 
 # Marker file to indicate a job was successfully audited
 AUDIT_COMPLETE_MARKER = ".audit_complete"
@@ -39,14 +43,18 @@ AUDIT_COMPLETE_MARKER = ".audit_complete"
 # Metadata file to track the run for a grouped folder
 RUN_METADATA_FILE = ".nz_audit_run.json"
 
+# Progress file to track batch processing progress
+PROGRESS_FILE = ".nz_audit_progress.json"
 
-def _save_run_metadata(grouped_folder: Path, run_id: str, run_path: Path, csv_path: Path | None) -> None:
+
+def _save_run_metadata(grouped_folder: Path, run_id: str, run_path: Path, csv_path: Path | None, xlsx_path: Path | None = None) -> None:
     """Save run metadata to the grouped folder for resume capability."""
     import json
     metadata = {
         "run_id": run_id,
-        "run_path": str(run_path),
-        "csv_path": str(csv_path) if csv_path else None,
+        "run_path": str(run_path.resolve() if isinstance(run_path, Path) else run_path),
+        "csv_path": str(csv_path.resolve() if isinstance(csv_path, Path) and csv_path else csv_path) if csv_path else None,
+        "xlsx_path": str(xlsx_path.resolve() if isinstance(xlsx_path, Path) and xlsx_path else xlsx_path) if xlsx_path else None,
         "updated_at": __import__("datetime").datetime.now().isoformat()
     }
     metadata_file = grouped_folder / RUN_METADATA_FILE
@@ -76,6 +84,37 @@ def _load_existing_csv_results(csv_path: Path) -> List[Dict[str, str]]:
         for row in reader:
             results.append(dict(row))
     return results
+
+
+def _write_progress(run_path: Path, completed: int, failed: int, total: int, skipped: int, is_running: bool = True) -> None:
+    """Write progress to a file in the run directory (survives server restarts)."""
+    import json, datetime
+    progress = {
+        "completed": completed,
+        "failed": failed,
+        "total": total,
+        "skipped": skipped,
+        "pending": total - completed - failed,
+        "percent": round((completed + failed) / total * 100, 1) if total > 0 else 0,
+        "is_running": is_running,
+        "updated_at": datetime.datetime.now().isoformat()
+    }
+    try:
+        (run_path / PROGRESS_FILE).write_text(json.dumps(progress, indent=2))
+    except Exception:
+        pass
+
+
+def _load_progress(run_path: Path) -> Dict[str, Any] | None:
+    """Load progress from the run directory."""
+    import json
+    progress_file = run_path / PROGRESS_FILE
+    if progress_file.exists():
+        try:
+            return json.loads(progress_file.read_text())
+        except Exception:
+            return None
+    return None
 
 
 def clear_audit_markers(grouped_folder: Path, clear_run_metadata: bool = True) -> int:
@@ -1051,9 +1090,14 @@ async def append_xlsx_row(row: Dict[str, str], output_path: Path) -> None:
                 cell = sheet.cell(row=next_row, column=col_idx, value=formula)
             else:
                 cell = sheet.cell(row=next_row, column=col_idx, value=value)
-            
+
             cell.alignment = Alignment(wrap_text=True, vertical="top")
-            
+
+            # Yellow background for "No" values
+            if value == "No":
+                yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                cell.fill = yellow_fill
+
             # Add comment with reasoning if this is a validation column
             if header in validation_reasoning_map:
                 reasoning_header = validation_reasoning_map[header]
@@ -1258,10 +1302,15 @@ def write_audit_xlsx(
                     cell = sheet.cell(row=row_idx, column=col_idx, value=formula)
                 else:
                     cell = sheet.cell(row=row_idx, column=col_idx, value=value)
-                
+
                 # Wrap text for long cells
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
-                
+
+                # Yellow background for "No" values
+                if value == "No":
+                    yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                    cell.fill = yellow_fill
+
                 # Add comment with reasoning if this is a validation column
                 if header in validation_reasoning_map:
                     reasoning_header = validation_reasoning_map[header]
@@ -1300,7 +1349,7 @@ def write_audit_xlsx(
 async def process_grouped_jobs_nz(
     grouped_folder: Path,
     broker_name: str = "",
-    resume_failed_only: bool = False
+    resume_failed_only: bool = True
 ) -> Dict[str, Any]:
     """
     Process all grouped job folders for NZ audit.
@@ -1387,114 +1436,143 @@ async def process_grouped_jobs_nz(
     
     if not job_folders:
         raise ValueError(f"No job folders found in {grouped_folder}")
-    
-    # Count already completed jobs if in resume mode
-    if resume_failed_only:
-        completed_count = sum(1 for f in job_folders if (f / AUDIT_COMPLETE_MARKER).exists())
-        pending_count = len(job_folders) - completed_count
-        print(f"Found {len(job_folders)} job folder(s): {completed_count} completed, {pending_count} pending", flush=True)
-    else:
-        print(f"Found {len(job_folders)} job folder(s)", flush=True)
-    
+
+    # Recovery: if completed jobs have results in prior run folders but not in current CSV,
+    # rebuild the CSV from individual job CSVs across all run directories.
+    existing_csv_rows = _load_existing_csv_results(combined_csv_path)
+    completed_markers = sum(1 for f in job_folders if (f / AUDIT_COMPLETE_MARKER).exists())
+    if completed_markers > 0 and len(existing_csv_rows) < completed_markers:
+        print(f"   🔧 CSV recovery: {len(existing_csv_rows)} rows in CSV but {completed_markers} completed jobs", flush=True)
+        recovered = 0
+        existing_hawbs = {r.get("HAWB") for r in existing_csv_rows}
+        output_base = run_path.parent
+        for run_dir in sorted(output_base.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            for job_dir in run_dir.iterdir():
+                if not job_dir.is_dir() or not job_dir.name.startswith("job_"):
+                    continue
+                for job_csv_file in job_dir.glob("nz_audit_*.csv"):
+                    try:
+                        rows = _load_existing_csv_results(job_csv_file)
+                        for row in rows:
+                            hawb = row.get("HAWB", "")
+                            if hawb and hawb not in existing_hawbs:
+                                append_csv_row(row, combined_csv_path)
+                                existing_hawbs.add(hawb)
+                                recovered += 1
+                    except Exception:
+                        pass
+        if recovered > 0:
+            print(f"      ✅ Recovered {recovered} rows from previous runs", flush=True)
+
+    completed_count = sum(1 for f in job_folders if (f / AUDIT_COMPLETE_MARKER).exists())
+    pending_count = len(job_folders) - completed_count
+    print(f"Found {len(job_folders)} job folder(s): {completed_count} completed, {pending_count} pending", flush=True)
     print(f"🚀 Processing with {MAX_CONCURRENT_JOBS} concurrent workers", flush=True)
-    
+
+    # Save metadata early so resume works even if interrupted
+    _save_run_metadata(grouped_folder, run_id, run_path, combined_csv_path, combined_xlsx_path)
+
     # Semaphore to limit concurrent jobs
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
-    
+
+    # Track progress (mutable counters for closure access)
+    progress_completed = [0]
+    progress_failed = [0]
+    progress_skipped = [0]
+
     async def process_single_job(job_folder: Path, csv_path: Path, xlsx_path: Path) -> Dict[str, Any]:
         """Process a single job with semaphore-limited concurrency."""
         async with semaphore:
             job_id = job_folder.name.replace("job_", "")
             marker_file = job_folder / AUDIT_COMPLETE_MARKER
-            
-            # Check if already completed (resume mode)
-            if resume_failed_only and marker_file.exists():
+
+            # Always skip completed jobs (resume support)
+            if marker_file.exists():
                 print(f"   ⏭️  Job {job_id} already completed, skipping...", flush=True)
+                progress_skipped[0] += 1
+                _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0])
                 return {
-                    "job_id": job_id,
-                    "success": True,
-                    "skipped": True,
-                    "error": None,
-                    "job_folder": None,
-                    "csv_path": None,
-                    "result": None,
-                    "token_usage": None
+                    "job_id": job_id, "success": True, "skipped": True,
+                    "error": None, "job_folder": None, "csv_path": None,
+                    "result": None, "token_usage": None
                 }
-            
+
             # Get all PDF files in the job folder
             pdf_files = list(job_folder.glob("*.pdf")) + list(job_folder.glob("*.PDF"))
-            
+
             if not pdf_files:
                 print(f"⚠️  No PDF files in {job_folder.name}, skipping...", flush=True)
+                progress_failed[0] += 1
+                _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0])
                 return {
-                    "job_id": job_id,
-                    "success": False,
-                    "skipped": False,
-                    "error": "No PDF files found",
-                    "job_folder": None,
-                    "csv_path": None,
-                    "result": None,
-                    "token_usage": None
+                    "job_id": job_id, "success": False, "skipped": False,
+                    "error": "No PDF files found", "job_folder": None,
+                    "csv_path": None, "result": None, "token_usage": None
                 }
-            
+
             # Create job folder in output
             output_job_path = create_job_directory(run_path, job_id)
-            
-            try:
-                # Run audit for this job (files will be copied to output folder)
-                audit_result, token_usage = await run_nz_audit(
-                    job_id=job_id,
-                    pdf_files=pdf_files,
-                    broker_name=broker_name,
-                    output_job_path=output_job_path
-                )
-                
-                # Convert to CSV row
-                row = create_csv_row(audit_result)
-                
-                # Save individual job CSV
-                job_csv_path = output_job_path / f"nz_audit_{job_id}.csv"
-                write_audit_csv([row], job_csv_path)
-                
-                # Append to combined CSV and XLSX files incrementally
+
+            # Retry with exponential backoff for transient API failures
+            last_error = None
+            for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    append_csv_row(row, csv_path)
-                    await append_xlsx_row(row, xlsx_path)
-                    print(f"   ✅ Job {job_id} → {output_job_path.name}/ (appended to combined files)", flush=True)
+                    audit_result, token_usage = await run_nz_audit(
+                        job_id=job_id,
+                        pdf_files=pdf_files,
+                        broker_name=broker_name,
+                        output_job_path=output_job_path
+                    )
+
+                    row = create_csv_row(audit_result)
+
+                    # Save individual job CSV
+                    job_csv_path = output_job_path / f"nz_audit_{job_id}.csv"
+                    write_audit_csv([row], job_csv_path)
+
+                    # Append to combined CSV and XLSX immediately
+                    try:
+                        append_csv_row(row, csv_path)
+                        await append_xlsx_row(row, xlsx_path)
+                    except Exception as e:
+                        print(f"   ⚠️  Job {job_id} completed but failed to append to combined files: {e}", flush=True)
+
+                    # Mark job as complete
+                    marker_file.write_text(f"Completed: {run_id}\n")
+                    progress_completed[0] += 1
+                    _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0])
+
+                    return {
+                        "job_id": job_id, "success": True, "skipped": False,
+                        "error": None, "job_folder": str(output_job_path),
+                        "csv_path": str(job_csv_path), "result": row,
+                        "token_usage": token_usage
+                    }
                 except Exception as e:
-                    print(f"   ⚠️  Job {job_id} completed but failed to append to combined files: {e}", flush=True)
-                    # Continue anyway - individual job CSV is saved
-                
-                # Mark job as complete in INPUT folder
-                marker_file.write_text(f"Completed: {run_id}\n")
-                
-                return {
-                    "job_id": job_id,
-                    "success": True,
-                    "skipped": False,
-                    "error": None,
-                    "job_folder": str(output_job_path),
-                    "csv_path": str(job_csv_path),
-                    "result": row,
-                    "token_usage": token_usage
-                }
-                
-            except Exception as e:
-                print(f"❌ Failed to audit job {job_id}: {e}", flush=True)
-                return {
-                    "job_id": job_id,
-                    "success": False,
-                    "skipped": False,
-                    "error": str(e),
-                    "job_folder": str(output_job_path),
-                    "csv_path": None,
-                    "result": None,
-                    "token_usage": None
-                }
-    
+                    last_error = e
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                        print(f"⚠️  Job {job_id} attempt {attempt}/{MAX_RETRIES} failed: {e}. Retrying in {delay}s...", flush=True)
+                        await asyncio.sleep(delay)
+                    else:
+                        print(f"❌ Job {job_id} failed after {MAX_RETRIES} attempts: {e}", flush=True)
+
+            progress_failed[0] += 1
+            _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0])
+            return {
+                "job_id": job_id, "success": False, "skipped": False,
+                "error": str(last_error), "job_folder": str(output_job_path),
+                "csv_path": None, "result": None, "token_usage": None
+            }
+
     # Process all jobs in parallel with limited concurrency
     tasks = [process_single_job(job_folder, combined_csv_path, combined_xlsx_path) for job_folder in sorted(job_folders)]
     job_results = await asyncio.gather(*tasks)
+
+    # Write final progress
+    _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0], is_running=False)
     
     # Collect results and token usage
     all_results: List[Dict[str, str]] = []
@@ -1540,7 +1618,7 @@ async def process_grouped_jobs_nz(
         print(f"📊 Combined XLSX: {combined_xlsx_path}", flush=True)
     
     # Save run metadata for future resume
-    _save_run_metadata(grouped_folder, run_id, run_path, combined_csv_path if combined_csv_path.exists() else None)
+    _save_run_metadata(grouped_folder, run_id, run_path, combined_csv_path if combined_csv_path.exists() else None, combined_xlsx_path if combined_xlsx_path.exists() else None)
     
     # Log total token usage
     total_tokens = total_input_tokens + total_output_tokens

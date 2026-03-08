@@ -17,15 +17,22 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List, Literal
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, BinaryContent
+import hashlib
+import time
+import httpx
+from pydantic_ai import Agent, BinaryContent, Tool
 from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
 from pydantic_ai.providers.google import GoogleProvider
 
 from .file_manager import get_next_run_id, create_run_directory, create_job_directory
 from .util.batch_processor import safe_copy_file
 
-# Maximum number of concurrent job workers
-MAX_CONCURRENT_JOBS = 30
+# Maximum number of concurrent job workers (keep low to avoid Gemini rate limits)
+MAX_CONCURRENT_JOBS = 50
+
+# Retry settings for transient API failures
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 5  # seconds (exponential backoff: 5s, 10s, 20s)
 
 # Marker file to indicate a job was successfully audited
 AUDIT_COMPLETE_MARKER = ".audit_complete"
@@ -33,14 +40,18 @@ AUDIT_COMPLETE_MARKER = ".audit_complete"
 # Metadata file to track the run for a grouped folder
 RUN_METADATA_FILE = ".au_audit_run.json"
 
+# Progress file to track batch processing progress
+PROGRESS_FILE = ".au_audit_progress.json"
 
-def _save_run_metadata(grouped_folder: Path, run_id: str, run_path: Path, csv_path: Path | None) -> None:
+
+def _save_run_metadata(grouped_folder: Path, run_id: str, run_path: Path, csv_path: Path | None, xlsx_path: Path | None = None) -> None:
     """Save run metadata to the grouped folder for resume capability."""
     import datetime
     metadata = {
         "run_id": run_id,
         "run_path": str(run_path.resolve()),  # Use absolute path
         "csv_path": str(csv_path.resolve()) if csv_path else None,
+        "xlsx_path": str(xlsx_path.resolve()) if xlsx_path else None,
         "updated_at": datetime.datetime.now().isoformat()
     }
     metadata_file = grouped_folder / RUN_METADATA_FILE
@@ -53,6 +64,36 @@ def _load_run_metadata(grouped_folder: Path) -> Dict[str, Any] | None:
     if metadata_file.exists():
         try:
             return json.loads(metadata_file.read_text())
+        except Exception:
+            return None
+    return None
+
+
+def _write_progress(run_path: Path, completed: int, failed: int, total: int, skipped: int, is_running: bool = True) -> None:
+    """Write progress to a file in the run directory (survives server restarts)."""
+    import datetime
+    progress = {
+        "completed": completed,
+        "failed": failed,
+        "total": total,
+        "skipped": skipped,
+        "pending": total - completed - failed,
+        "percent": round((completed + failed) / total * 100, 1) if total > 0 else 0,
+        "is_running": is_running,
+        "updated_at": datetime.datetime.now().isoformat()
+    }
+    try:
+        (run_path / PROGRESS_FILE).write_text(json.dumps(progress, indent=2))
+    except Exception:
+        pass  # Don't let progress tracking break the main flow
+
+
+def _load_progress(run_path: Path) -> Dict[str, Any] | None:
+    """Load progress from the run directory."""
+    progress_file = run_path / PROGRESS_FILE
+    if progress_file.exists():
+        try:
+            return json.loads(progress_file.read_text())
         except Exception:
             return None
     return None
@@ -198,6 +239,10 @@ class AUAuditHeaderValidation(BaseModel):
     oth_disc_correct: ValidationStatus = Field(..., description="OTH/DISC Correct? - Declared discount/additions correctly based on invoice")
     oth_disc_reasoning: str = Field("", description="Reasoning for OTH/DISC validation")
 
+    # UOM/QTY - populated via tariff_uq_lookup tool
+    uom_qty_result: str = Field("", description="UOM/QTY check: '1' if all UQ=NO lines match between entry print and invoice, '0' if any mismatch, '' (blank) if no lines require checking")
+    uom_qty_reasoning: str = Field("", description="Reasoning for UOM/QTY check")
+
 
 class AUAuditResult(BaseModel):
     """Complete AU Audit Result."""
@@ -279,9 +324,17 @@ For EACH validation, provide the status and a brief reasoning.
 9. **T & I Correct?**: 
    - Transport and insurance declared as per notes, documentation, or SOP
 
-10. **OTH/DISC Correct?**: 
+10. **OTH/DISC Correct?**:
     - Declared discount/additions correctly based on invoice
     - Mark down if question not asked for unreasonable discounts
+
+11. **UOM/QTY Check** (use the `tariff_uq_lookup` tool):
+    For each line on the entry print that has a QUANTITY value:
+    - Call `tariff_uq_lookup` with the full tariff+stat code (10 digits, no dots) for that line
+    - If the tool returns "No" (Number of Pieces): compare entry print quantity with the invoice quantity for the matching line
+    - If the tool returns anything else ("BLANK", "..", "KG", etc.): skip that line, no check needed
+    If QUANTITY column is empty on a line: skip that line.
+    Result: set `uom_qty_result` to "1" if all UQ=No lines match, "0" if any mismatch, "" (blank) if no lines needed checking.
 
 **CRITICAL RULES**:
 - **NEVER fabricate information** - only extract data visible in documents
@@ -293,25 +346,62 @@ For EACH validation, provide the status and a brief reasoning.
 Return JSON in the specified format.
 """
 
+async def tariff_uq_lookup(tariff_code: str) -> str:
+    """Look up the Unit of Quantity (UQ) for an Australian tariff code.
+
+    Args:
+        tariff_code: The full tariff code (8 or 10 digits, no dots). e.g. '8483101046'.
+
+    Returns:
+        The UQ value: 'No' means Number of Pieces, '..' or 'BLANK' means unspecified,
+        or other values like 'KG'/'T'. Returns 'NOT_FOUND' if tariff not in database.
+    """
+    secret = os.getenv("TARIFF_API_SECRET_TOKEN", "")
+    ts = str(int(time.time()))
+    sig = hashlib.sha256(f"{secret}{ts}".encode()).hexdigest()
+    headers = {"X-Tariff-Timestamp": ts, "X-Tariff-Signature": sig}
+
+    code = tariff_code.replace(".", "").strip()
+    url = f"https://api.clear.ai/api/v1/au_tariff/tariffs/search/?code={code}&book_ref=schedule3"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code == 200:
+                data = res.json()
+                unit = data.get("unit", "")
+                return unit if unit else "BLANK"
+    except Exception:
+        pass
+    return "NOT_FOUND"
+
+
 _au_audit_agent: Agent | None = None
 
 def _get_au_audit_agent() -> Agent:
     global _au_audit_agent
     if _au_audit_agent is not None:
         return _au_audit_agent
-    
+
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY required")
- 
+
     settings = GoogleModelSettings(
-        temperature=0.1, 
+        temperature=0.1,
         google_thinking_config={'thinking_level': 'high'}
         # google_thinking_config={'thinking_budget': 10000}
     )
 
     model = GoogleModel('gemini-3-pro-preview', provider=GoogleProvider(api_key=api_key))
-    _au_audit_agent = Agent(model=model, instructions=_AU_AUDIT_SYSTEM_PROMPT, output_type=AUAuditBatchOutput, retries=5, model_settings=settings)
+    _au_audit_agent = Agent(
+        model=model,
+        instructions=_AU_AUDIT_SYSTEM_PROMPT,
+        output_type=AUAuditBatchOutput,
+        tools=[Tool(tariff_uq_lookup)],
+        retries=5,
+        model_settings=settings,
+    )
     return _au_audit_agent
 
 
@@ -440,7 +530,7 @@ def create_csv_row(audit_result: AUAuditResult) -> Dict[str, str]:
         "GST E": "1",
         "CLASS": "1",
         "CONCESSION": "1",
-        "UOM/QTY": "1",
+        "UOM/QTY": hv.uom_qty_result if hv.uom_qty_result in ("1", "0") else "1",
     }
 
     # Score is a formula in Excel, not calculated here
@@ -485,7 +575,8 @@ def create_csv_row(audit_result: AUAuditResult) -> Dict[str, str]:
         "NOTES": "1",
         # Line-level - leave empty
         "CONCESSION": "",
-        "UOM/QTY": "",
+        "UOM/QTY": hv.uom_qty_result if hv.uom_qty_result in ("1", "0") else "",
+        "UOM/QTY reasoning": hv.uom_qty_reasoning,
         # Always "1" - no AI validation
         "AQIS": "1",
         "PERMITS": "1",
@@ -782,7 +873,7 @@ def write_audit_xlsx(results: List[Dict[str, str]], output_path: Path) -> Path:
     return output_path
 
 
-async def process_grouped_jobs_au(grouped_folder: Path, broker_name: str = "", resume_failed_only: bool = False) -> Dict[str, Any]:
+async def process_grouped_jobs_au(grouped_folder: Path, broker_name: str = "", resume_failed_only: bool = True) -> Dict[str, Any]:
     print(f"\n{'='*80}", flush=True)
     print("🇦🇺 AU AUDIT BATCH PROCESSING", flush=True)
     print(f"{'='*80}", flush=True)
@@ -819,7 +910,7 @@ async def process_grouped_jobs_au(grouped_folder: Path, broker_name: str = "", r
     incomplete_csv_path = run_path / f"incomplete_docs_{run_id}.csv"
     
     if not csv_path.exists(): create_csv_file_with_headers(csv_path)
-    
+
     # Create incomplete docs CSV with headers
     incomplete_fieldnames = ["Job ID", "WAYBILL #", "Entry #", "Has AWB", "Has Invoice", "Has Entry Print", "Missing Documents"]
     if not incomplete_csv_path.exists():
@@ -828,63 +919,138 @@ async def process_grouped_jobs_au(grouped_folder: Path, broker_name: str = "", r
             writer.writeheader()
 
     job_folders = [f for f in grouped_folder.iterdir() if f.is_dir() and f.name.startswith("job_")]
+
+    # Recovery: if completed jobs have results in prior run folders but not in current CSV,
+    # rebuild the CSV from individual job CSVs across all run directories.
+    existing_csv_rows = _load_existing_csv_results(csv_path)
+    completed_markers = sum(1 for f in job_folders if (f / AUDIT_COMPLETE_MARKER).exists())
+    if completed_markers > 0 and len(existing_csv_rows) < completed_markers:
+        print(f"   🔧 CSV recovery: {len(existing_csv_rows)} rows in CSV but {completed_markers} completed jobs", flush=True)
+        print(f"      Scanning all run directories for individual job CSVs...", flush=True)
+        recovered = 0
+        existing_waybills = {r.get("WAYBILL #") for r in existing_csv_rows}
+        # Scan all run directories under output for job CSVs
+        output_base = run_path.parent
+        for run_dir in sorted(output_base.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            for job_dir in run_dir.iterdir():
+                if not job_dir.is_dir() or not job_dir.name.startswith("job_"):
+                    continue
+                for job_csv_file in job_dir.glob("au_audit_*.csv"):
+                    try:
+                        rows = _load_existing_csv_results(job_csv_file)
+                        for row in rows:
+                            wb = row.get("WAYBILL #", "")
+                            if wb and wb not in existing_waybills:
+                                append_csv_row(row, csv_path)
+                                existing_waybills.add(wb)
+                                recovered += 1
+                    except Exception:
+                        pass
+        if recovered > 0:
+            print(f"      ✅ Recovered {recovered} rows from previous runs", flush=True)
+            existing_csv_rows = _load_existing_csv_results(csv_path)
+            print(f"      CSV now has {len(existing_csv_rows)} rows", flush=True)
+        else:
+            print(f"      No additional rows found to recover", flush=True)
     print(f"   Total job folders found: {len(job_folders)}", flush=True)
     print(f"   Max concurrent jobs: {MAX_CONCURRENT_JOBS}", flush=True)
     print(f"{'='*80}\n", flush=True)
     
+    # Save metadata early so resume works even if interrupted before the end
+    _save_run_metadata(grouped_folder, run_id, run_path, csv_path, xlsx_path)
+
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+
+    # Track progress (mutable counters for closure access)
+    progress_completed = [0]
+    progress_failed = [0]
+    progress_skipped = [0]
 
     async def process_job(folder: Path):
         async with semaphore:
             job_id = folder.name.replace("job_", "")
-            if resume_failed_only and (folder / AUDIT_COMPLETE_MARKER).exists():
+
+            # Always skip completed jobs (resume support)
+            if (folder / AUDIT_COMPLETE_MARKER).exists():
                 print(f"⏭️  Skipping job {job_id} (already complete)", flush=True)
+                progress_skipped[0] += 1
+                _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0])
                 return {"success": True, "skipped": True, "job_id": job_id}
-            
+
             pdfs = list(folder.glob("*.pdf")) + list(folder.glob("*.PDF"))
-            if not pdfs: 
+            if not pdfs:
                 print(f"⚠️  Job {job_id}: No PDFs found", flush=True)
+                progress_failed[0] += 1
+                _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0])
                 return {"success": False, "job_id": job_id, "error": "No PDFs"}
-            
+
             out_job = create_job_directory(run_path, job_id)
-            try:
-                res, usage = await run_au_audit(job_id, pdfs, broker_name, out_job)
-                row = create_csv_row(res)
-                
-                job_csv = out_job / f"au_audit_{job_id}.csv"
-                with open(job_csv, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-                    writer.writeheader()
-                    writer.writerow(row)
-                
-                # Incremental append (sorted in append_csv_row)
-                append_csv_row(row, csv_path)
-                await append_xlsx_row(row, xlsx_path)
-                
-                # Progressively append incomplete docs
-                if not res.documents.is_full_set:
-                    waybill = res.extraction.waybill_number.replace(" ", "") if res.extraction.waybill_number else ""
-                    incomplete_row = {
-                        "Job ID": job_id,
-                        "WAYBILL #": waybill,
-                        "Entry #": res.extraction.entry_number or "",
-                        "Has AWB": "Yes" if res.documents.has_awb else "No",
-                        "Has Invoice": "Yes" if res.documents.has_invoice else "No",
-                        "Has Entry Print": "Yes" if res.documents.has_entry_print else "No",
-                        "Missing Documents": ", ".join(res.documents.missing_docs)
-                    }
-                    with open(incomplete_csv_path, 'a', newline='', encoding='utf-8') as f:
-                        writer = csv.DictWriter(f, fieldnames=incomplete_fieldnames)
-                        writer.writerow(incomplete_row)
-                
-                (folder / AUDIT_COMPLETE_MARKER).write_text(f"Completed: {run_id}")
-                return {"success": True, "job_id": job_id, "row": row, "token_usage": usage, "audit_result": res}
-            except Exception as e:
-                return {"success": False, "job_id": job_id, "error": str(e)}
+
+            # Retry with exponential backoff for transient API failures
+            last_error = None
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    res, usage = await run_au_audit(job_id, pdfs, broker_name, out_job)
+                    row = create_csv_row(res)
+
+                    job_csv = out_job / f"au_audit_{job_id}.csv"
+                    with open(job_csv, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+                        writer.writeheader()
+                        writer.writerow(row)
+
+                    # Incremental CSV append (cheap, survives restarts)
+                    append_csv_row(row, csv_path)
+                    # Update xlsx immediately so no job is lost on interruption
+                    await append_xlsx_row(row, xlsx_path)
+
+                    # Progressively append incomplete docs (deduplicated by Job ID)
+                    if not res.documents.is_full_set:
+                        waybill = res.extraction.waybill_number.replace(" ", "") if res.extraction.waybill_number else ""
+                        incomplete_row = {
+                            "Job ID": job_id,
+                            "WAYBILL #": waybill,
+                            "Entry #": res.extraction.entry_number or "",
+                            "Has AWB": "Yes" if res.documents.has_awb else "No",
+                            "Has Invoice": "Yes" if res.documents.has_invoice else "No",
+                            "Has Entry Print": "Yes" if res.documents.has_entry_print else "No",
+                            "Missing Documents": ", ".join(res.documents.missing_docs)
+                        }
+                        # Read existing, dedup by Job ID, rewrite
+                        existing_incomplete = _load_existing_csv_results(incomplete_csv_path)
+                        existing_incomplete = [r for r in existing_incomplete if r.get("Job ID") != job_id]
+                        existing_incomplete.append(incomplete_row)
+                        with open(incomplete_csv_path, 'w', newline='', encoding='utf-8') as f:
+                            writer = csv.DictWriter(f, fieldnames=incomplete_fieldnames)
+                            writer.writeheader()
+                            writer.writerows(existing_incomplete)
+
+                    (folder / AUDIT_COMPLETE_MARKER).write_text(f"Completed: {run_id}")
+                    progress_completed[0] += 1
+                    _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0])
+
+                    return {"success": True, "job_id": job_id, "row": row, "token_usage": usage, "audit_result": res}
+                except Exception as e:
+                    last_error = e
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                        print(f"⚠️  Job {job_id} attempt {attempt}/{MAX_RETRIES} failed: {e}. Retrying in {delay}s...", flush=True)
+                        await asyncio.sleep(delay)
+                    else:
+                        print(f"❌ Job {job_id} failed after {MAX_RETRIES} attempts: {e}", flush=True)
+
+            progress_failed[0] += 1
+            _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0])
+            return {"success": False, "job_id": job_id, "error": str(last_error)}
 
     tasks = [process_job(f) for f in sorted(job_folders)]
     results = await asyncio.gather(*tasks)
     
+    # Write final progress (is_running=False)
+    _write_progress(run_path, progress_completed[0], progress_failed[0], len(job_folders), progress_skipped[0], is_running=False)
+
     # Collect results and token usage
     successful = 0
     failed = 0
@@ -936,7 +1102,7 @@ async def process_grouped_jobs_au(grouped_folder: Path, broker_name: str = "", r
     if successful_rows:
         write_audit_xlsx(successful_rows, xlsx_path)
     
-    _save_run_metadata(grouped_folder, run_id, run_path, csv_path)
+    _save_run_metadata(grouped_folder, run_id, run_path, csv_path, xlsx_path)
     
     # Log summary
     total_tokens = total_input_tokens + total_output_tokens

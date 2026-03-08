@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -39,35 +39,32 @@ interface ListGroupedFoldersResponse {
   folders: GroupedFolder[];
 }
 
-interface AUAuditJobResult {
-  job_id: string;
-  success: boolean;
-  error?: string;
-  job_folder?: string;
-  csv_path?: string;
-  extraction?: {
-    audit_month: string;
-    entry_number: string;
-    waybill_number: string;
-  };
-  header_validation?: Record<string, string>;
-  auditor_comments?: string;
-  auditor?: string;
+interface AuditProgress {
+  completed: number;
+  failed: number;
+  total: number;
+  skipped: number;
+  pending: number;
+  percent: number;
+  is_running: boolean;
+  updated_at: string;
 }
 
-interface AUAuditBatchResponse {
+interface AuditStatusResponse {
   success: boolean;
-  message: string;
-  run_id?: string;
-  run_path?: string;
+  folder_name: string;
+  is_running: boolean;
+  task_error: string | null;
+  run_id: string | null;
   total_jobs: number;
-  successful_jobs: number;
-  failed_jobs: number;
-  skipped_jobs: number;
-  csv_path?: string;
-  xlsx_path?: string;
-  results: AUAuditJobResult[];
+  completed_jobs: number;
+  pending_jobs: number;
+  progress: AuditProgress | null;
+  csv_path: string | null;
+  xlsx_path: string | null;
 }
+
+const API_ENDPOINT = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export default function AUAuditPage() {
   const router = useRouter();
@@ -75,9 +72,10 @@ export default function AUAuditPage() {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
-  const [auditResult, setAuditResult] = useState<AUAuditBatchResponse | null>(null);
+  const [auditStatus, setAuditStatus] = useState<AuditStatusResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [jobList, setJobList] = useState<JobListResponse | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     loadGroupedFolders();
@@ -90,8 +88,7 @@ export default function AUAuditPage() {
         return;
       }
       try {
-        const endpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-        const response = await fetch(`${endpoint}/api/au-audit/jobs?folder_name=${encodeURIComponent(selectedFolder)}`);
+        const response = await fetch(`${API_ENDPOINT}/api/au-audit/jobs?folder_name=${encodeURIComponent(selectedFolder)}`);
         if (!response.ok) throw new Error('Failed to load job list');
         const data: JobListResponse = await response.json();
         setJobList(data);
@@ -102,12 +99,18 @@ export default function AUAuditPage() {
     fetchJobs();
   }, [selectedFolder]);
 
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
   const loadGroupedFolders = async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const endpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${endpoint}/api/au-audit/grouped-folders`);
+      const response = await fetch(`${API_ENDPOINT}/api/au-audit/grouped-folders`);
       if (!response.ok) throw new Error('Failed to load grouped folders');
       const data: ListGroupedFoldersResponse = await response.json();
       setFolders(data.folders);
@@ -118,78 +121,85 @@ export default function AUAuditPage() {
     }
   };
 
-  const handleRunAudit = async (resumeFailedOnly: boolean = false) => {
+  const pollStatus = useCallback(async (folderName: string) => {
+    try {
+      const response = await fetch(`${API_ENDPOINT}/api/au-audit/status?folder_name=${encodeURIComponent(folderName)}`);
+      if (!response.ok) return;
+      const data: AuditStatusResponse = await response.json();
+      setAuditStatus(data);
+
+      // Refresh job list while polling
+      const jobsResponse = await fetch(`${API_ENDPOINT}/api/au-audit/jobs?folder_name=${encodeURIComponent(folderName)}`);
+      if (jobsResponse.ok) {
+        const jobsData: JobListResponse = await jobsResponse.json();
+        setJobList(jobsData);
+      }
+
+      // Stop polling when done
+      if (!data.is_running) {
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+        setProcessing(false);
+        await loadGroupedFolders();
+      }
+    } catch {
+      // Ignore poll errors (server might be restarting)
+    }
+  }, []);
+
+  const startPolling = useCallback((folderName: string) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    // Poll immediately, then every 3 seconds
+    pollStatus(folderName);
+    pollRef.current = setInterval(() => pollStatus(folderName), 3000);
+  }, [pollStatus]);
+
+  const handleRunAudit = async (resumeFailedOnly: boolean = true) => {
     if (!selectedFolder) return;
     setProcessing(true);
     setErrorMsg(null);
-    setAuditResult(null);
+    setAuditStatus(null);
     try {
-      const endpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const params = new URLSearchParams({
         folder_name: selectedFolder,
         resume_failed_only: resumeFailedOnly.toString()
       });
-      const response = await fetch(`${endpoint}/api/au-audit/process?${params}`, { method: 'POST' });
+      const response = await fetch(`${API_ENDPOINT}/api/au-audit/process?${params}`, { method: 'POST' });
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Audit failed');
       }
-      const data: AUAuditBatchResponse = await response.json();
-      setAuditResult(data);
-      await loadGroupedFolders();
-      // Trigger job list refresh by resetting selectedFolder
-      const folder = selectedFolder;
-      setSelectedFolder(null);
-      setTimeout(() => setSelectedFolder(folder), 0);
+      // Start polling for progress
+      startPolling(selectedFolder);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Audit failed');
-    } finally {
       setProcessing(false);
     }
   };
 
   const handleDownloadCSV = () => {
-    if (!auditResult?.csv_path) return;
-    const endpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    window.open(`${endpoint}/api/au-audit/download-csv?csv_path=${encodeURIComponent(auditResult.csv_path)}`, '_blank');
+    if (!auditStatus?.csv_path) return;
+    window.open(`${API_ENDPOINT}/api/au-audit/download-csv?csv_path=${encodeURIComponent(auditStatus.csv_path)}`, '_blank');
   };
 
   const handleDownloadXLSX = () => {
-    if (!auditResult?.xlsx_path) return;
-    const endpoint = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    window.open(`${endpoint}/api/au-audit/download-xlsx?xlsx_path=${encodeURIComponent(auditResult.xlsx_path)}`, '_blank');
+    if (!auditStatus?.xlsx_path) return;
+    window.open(`${API_ENDPOINT}/api/au-audit/download-xlsx?xlsx_path=${encodeURIComponent(auditStatus.xlsx_path)}`, '_blank');
   };
 
-  const getStatusBadge = (val: string) => {
-    if (val === "1" || val === "Yes") return <Badge className="bg-green-500 text-white">Pass</Badge>;
-    if (val === "0" || val === "No") return <Badge className="bg-red-500 text-white">Fail</Badge>;
-    return <Badge variant="secondary">N/A</Badge>;
-  };
+  const progress = auditStatus?.progress;
+  const isRunning = processing || (auditStatus?.is_running ?? false);
+  const isDone = auditStatus && !auditStatus.is_running && (auditStatus.completed_jobs > 0 || auditStatus.task_error);
 
   return (
     <div className="h-screen bg-background flex flex-col p-4 relative">
-      {processing && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center">
-          <Card className="w-96">
-            <CardContent className="pt-6 pb-6 text-center">
-              <div className="flex flex-col items-center gap-4">
-                <div className="relative h-16 w-16">
-                  <div className="absolute inset-0 rounded-full border-4 border-primary/20"></div>
-                  <div className="absolute inset-0 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
-                </div>
-                <h3 className="text-lg font-semibold">Running AU Audit</h3>
-                <p className="text-sm text-muted-foreground">Analyzing jobs in {selectedFolder}...</p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
       <div className="max-w-7xl mx-auto w-full flex flex-col h-full">
         <header className="mb-4 flex items-center justify-between shrink-0">
-          <h1 className="text-3xl font-semibold tracking-tight">🇦🇺 AU Audit</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">AU Audit</h1>
           <nav className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => router.push('/')}>← Back</Button>
+            <Button variant="outline" size="sm" onClick={() => router.push('/')}>Back</Button>
             <Button variant="outline" size="sm" onClick={() => router.push('/output')}>Output</Button>
           </nav>
         </header>
@@ -211,16 +221,20 @@ export default function AUAuditPage() {
                       </div>
                       <div className="flex justify-between text-xs opacity-70">
                         <span>{new Date(f.created).toLocaleDateString()}</span>
-                        {f.completed_jobs > 0 && <span className="text-green-500">✓ {f.completed_jobs}/{f.job_count}</span>}
+                        {f.completed_jobs > 0 && <span className="text-green-500">{f.completed_jobs}/{f.job_count}</span>}
                       </div>
                     </div>
                   ))}
                 </div>
                 {selectedFolder && (
                   <div className="space-y-2">
-                    <Button onClick={() => handleRunAudit(false)} disabled={processing} className="w-full">Run AU Audit</Button>
+                    <Button onClick={() => handleRunAudit(true)} disabled={isRunning} className="w-full">
+                      {isRunning ? 'Running...' : (folders.find(f => f.name === selectedFolder)?.completed_jobs ?? 0) > 0 ? 'Resume Audit' : 'Run AU Audit'}
+                    </Button>
                     {(folders.find(f => f.name === selectedFolder)?.completed_jobs ?? 0) > 0 && (
-                      <Button onClick={() => handleRunAudit(true)} variant="outline" className="w-full border-orange-500 text-orange-600">Resume Remaining</Button>
+                      <Button onClick={() => handleRunAudit(false)} variant="outline" className="w-full border-orange-500 text-orange-600" disabled={isRunning}>
+                        Restart All Jobs
+                      </Button>
                     )}
                   </div>
                 )}
@@ -239,7 +253,7 @@ export default function AUAuditPage() {
                       <div key={j.job_id} className={`p-2 rounded-md border text-sm ${j.status === 'completed' ? 'bg-green-50 border-green-200' : 'bg-muted/50'}`}>
                         <div className="flex justify-between items-center">
                           <span className="font-medium truncate">{j.hawb || j.job_id}</span>
-                          <Badge variant={j.status === 'completed' ? 'default' : 'secondary'}>{j.status === 'completed' ? '✓' : '⏳'}</Badge>
+                          <Badge variant={j.status === 'completed' ? 'default' : 'secondary'}>{j.status === 'completed' ? 'Done' : 'Pending'}</Badge>
                         </div>
                       </div>
                     ))}
@@ -248,7 +262,6 @@ export default function AUAuditPage() {
               </Card>
             )}
 
-            {/* Error display */}
             {errorMsg && (
               <Card className="border-red-500">
                 <CardContent className="pt-4 pb-4">
@@ -259,56 +272,143 @@ export default function AUAuditPage() {
           </div>
 
           <div className="col-span-2 space-y-4 overflow-y-auto pr-2 pb-4">
-            {auditResult ? (
-              <>
-                <Card>
-                  <CardHeader>
-                    <div className="flex justify-between items-center">
-                      <CardTitle>Results</CardTitle>
-                      <div className="flex gap-2">
-                        <Button onClick={handleDownloadCSV} size="sm" variant="outline">CSV</Button>
-                        <Button onClick={handleDownloadXLSX} size="sm">XLSX</Button>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="flex gap-8 mb-4">
-                      <div><div className="text-2xl font-bold">{auditResult.successful_jobs}</div><div className="text-xs text-muted-foreground">Success</div></div>
-                      <div><div className="text-2xl font-bold text-red-500">{auditResult.failed_jobs}</div><div className="text-xs text-muted-foreground">Failed</div></div>
-                      <div><div className="text-2xl font-bold">{auditResult.total_jobs}</div><div className="text-xs text-muted-foreground">Total</div></div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {auditResult.results.map((r, i) => (
-                  <Card key={i}>
-                    <CardHeader className="pb-2">
-                      <div className="flex justify-between items-center">
-                        <CardTitle className="text-base">Job: {r.extraction?.waybill_number || r.job_id}</CardTitle>
-                        <Badge variant={r.success ? "default" : "destructive"}>{r.success ? 'Pass' : 'Error'}</Badge>
-                      </div>
-                      {r.extraction && <CardDescription>Entry: {r.extraction.entry_number} | Month: {r.extraction.audit_month}</CardDescription>}
-                    </CardHeader>
-                    <CardContent>
-                      {r.header_validation && (
-                        <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs">
-                          {Object.entries(r.header_validation).map(([k, v]) => (
-                            !k.endsWith('_reasoning') && (
-                              <div key={k} className="flex justify-between items-center py-1 border-b">
-                                <span className="capitalize">{k.replace(/_/g, ' ')}</span>
-                                {getStatusBadge(v)}
-                              </div>
-                            )
-                          ))}
-                        </div>
+            {/* Progress / Running State */}
+            {isRunning && auditStatus && (
+              <Card>
+                <CardHeader>
+                  <div className="flex justify-between items-center">
+                    <CardTitle>Audit In Progress</CardTitle>
+                    <span className="text-2xl font-bold tabular-nums">
+                      {auditStatus.completed_jobs} / {auditStatus.total_jobs}
+                    </span>
+                  </div>
+                  <CardDescription>
+                    {auditStatus.total_jobs > 0
+                      ? `${Math.round((auditStatus.completed_jobs / auditStatus.total_jobs) * 100)}% complete`
+                      : 'Starting...'}
+                    {progress?.failed ? ` \u00b7 ${progress.failed} failed` : ''}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    {/* Progress bar */}
+                    <div className="w-full bg-muted rounded-full h-4 overflow-hidden flex">
+                      <div
+                        className="bg-primary h-full transition-all duration-500"
+                        style={{ width: `${auditStatus.total_jobs > 0 ? (auditStatus.completed_jobs / auditStatus.total_jobs) * 100 : 0}%` }}
+                      />
+                      {(progress?.failed ?? 0) > 0 && (
+                        <div
+                          className="bg-red-500 h-full transition-all duration-500"
+                          style={{ width: `${auditStatus.total_jobs > 0 ? ((progress?.failed ?? 0) / auditStatus.total_jobs) * 100 : 0}%` }}
+                        />
                       )}
-                      {r.auditor_comments && <div className="mt-4 p-2 bg-muted/50 rounded text-xs"><b>Comments:</b> {r.auditor_comments}</div>}
-                    </CardContent>
-                  </Card>
-                ))}
-              </>
-            ) : !processing && (
-              <Card><CardContent className="pt-6 pb-32 text-center text-muted-foreground">Select a folder to see AU audit results</CardContent></Card>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4 text-center">
+                      <div>
+                        <div className="text-2xl font-bold text-green-600 tabular-nums">{auditStatus.completed_jobs}</div>
+                        <div className="text-xs text-muted-foreground">Completed</div>
+                      </div>
+                      <div>
+                        <div className="text-2xl font-bold text-red-500 tabular-nums">{progress?.failed ?? 0}</div>
+                        <div className="text-xs text-muted-foreground">Failed</div>
+                      </div>
+                      <div>
+                        <div className="text-2xl font-bold tabular-nums">{auditStatus.pending_jobs}</div>
+                        <div className="text-xs text-muted-foreground">Remaining</div>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground text-center">
+                      You can close this page or stop the server. Resume by clicking &quot;Resume Audit&quot; again.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            {isRunning && !auditStatus && (
+              <Card>
+                <CardContent className="pt-6 pb-6 text-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="h-10 w-10 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+                    <p className="text-sm text-muted-foreground">Starting audit...</p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Completed State */}
+            {isDone && !isRunning && (
+              <Card>
+                <CardHeader>
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <CardTitle>
+                        {auditStatus.task_error ? 'Audit Failed' : 'Audit Complete'}
+                      </CardTitle>
+                      {auditStatus.run_id && (
+                        <CardDescription className="mt-1">Run: {auditStatus.run_id}</CardDescription>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl font-bold tabular-nums">
+                        {auditStatus.completed_jobs} / {auditStatus.total_jobs}
+                      </span>
+                      <div className="flex gap-2">
+                        {auditStatus.csv_path && <Button onClick={handleDownloadCSV} size="sm" variant="outline">CSV</Button>}
+                        {auditStatus.xlsx_path && <Button onClick={handleDownloadXLSX} size="sm">XLSX</Button>}
+                      </div>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {auditStatus.task_error ? (
+                    <p className="text-sm text-red-500">{auditStatus.task_error}</p>
+                  ) : (
+                    <>
+                      <div className="w-full bg-muted rounded-full h-3 overflow-hidden flex mb-4">
+                        <div
+                          className="bg-green-500 h-full"
+                          style={{ width: `${auditStatus.total_jobs > 0 ? (auditStatus.completed_jobs / auditStatus.total_jobs) * 100 : 0}%` }}
+                        />
+                        {(progress?.failed ?? 0) > 0 && (
+                          <div
+                            className="bg-red-500 h-full"
+                            style={{ width: `${auditStatus.total_jobs > 0 ? ((progress?.failed ?? 0) / auditStatus.total_jobs) * 100 : 0}%` }}
+                          />
+                        )}
+                      </div>
+                      <div className="grid grid-cols-3 gap-8 text-center">
+                        <div>
+                          <div className="text-3xl font-bold text-green-600 tabular-nums">{auditStatus.completed_jobs}</div>
+                          <div className="text-xs text-muted-foreground">Completed</div>
+                        </div>
+                        <div>
+                          <div className="text-3xl font-bold text-red-500 tabular-nums">{progress?.failed ?? 0}</div>
+                          <div className="text-xs text-muted-foreground">Failed</div>
+                        </div>
+                        <div>
+                          <div className="text-3xl font-bold tabular-nums">{auditStatus.total_jobs}</div>
+                          <div className="text-xs text-muted-foreground">Total</div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {auditStatus.pending_jobs > 0 && !auditStatus.task_error && (
+                    <p className="text-sm text-orange-600 mt-4 text-center">
+                      {auditStatus.pending_jobs} jobs remaining. Click &quot;Resume Audit&quot; to continue.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Idle State */}
+            {!isRunning && !isDone && (
+              <Card>
+                <CardContent className="pt-6 pb-32 text-center text-muted-foreground">
+                  Select a folder and click &quot;Run AU Audit&quot; to start
+                </CardContent>
+              </Card>
             )}
           </div>
         </div>
@@ -316,4 +416,3 @@ export default function AUAuditPage() {
     </div>
   );
 }
-
