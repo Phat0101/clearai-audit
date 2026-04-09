@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import csv
+import re
 import shutil
 import asyncio
 import json
@@ -197,6 +198,17 @@ class AUAuditExtraction(BaseModel):
     entry_date: str = Field(..., description="Entry date - STRICTLY dd/mm/yyyy format (e.g., '01/09/2025', '15/11/2025')")
 
 
+class ClassificationLineDetail(BaseModel):
+    """Per-line classification detail for broker review."""
+    line_number: str = Field(..., description="Line number from entry print (e.g. '1', '2', '3')")
+    tariff_code: str = Field(..., description="8-digit tariff code from entry print")
+    official_description: str = Field("", description="Official tariff description (flatten_goods from tool)")
+    entry_print_description: str = Field("", description="Description as shown on entry print")
+    invoice_description: str = Field("", description="Description as shown on invoice")
+    result: str = Field(..., description="'Reasonable' or 'Mismatch'")
+    explanation: str = Field("", description="Why the classification is reasonable or not")
+
+
 class AUAuditHeaderValidation(BaseModel):
     """Header-level validation fields for AU Audit - only fields requiring AI validation."""
     # OC - Owner Code
@@ -240,8 +252,13 @@ class AUAuditHeaderValidation(BaseModel):
     oth_disc_reasoning: str = Field("", description="Reasoning for OTH/DISC validation")
 
     # UOM/QTY - populated via tariff_uq_lookup tool
-    uom_qty_result: str = Field("", description="UOM/QTY check: '1' if all UQ=NO lines match between entry print and invoice, '0' if any mismatch, '' (blank) if no lines require checking")
+    uom_qty_result: str = Field("", description="UOM/QTY check: '1' if all lines pass (including when all UQ are BLANK/.. — still a pass), '0' if any mismatch found")
     uom_qty_reasoning: str = Field("", description="Reasoning for UOM/QTY check")
+
+    # CLASS - populated via tariff_classification_check tool
+    class_result: str = Field("", description="CLASS check: '1' if all lines have reasonable tariff classification, '0' if any clear mismatch")
+    class_reasoning: str = Field("", description="Brief summary of classification check result")
+    class_line_details: List[ClassificationLineDetail] = Field(default_factory=list, description="Per-line classification details for each entry print line")
 
 
 class AUAuditResult(BaseModel):
@@ -331,10 +348,38 @@ For EACH validation, provide the status and a brief reasoning.
 11. **UOM/QTY Check** (use the `tariff_uq_lookup` tool):
     For each line on the entry print that has a QUANTITY value:
     - Call `tariff_uq_lookup` with the full tariff+stat code (10 digits, no dots) for that line
-    - If the tool returns "No" (Number of Pieces): compare entry print quantity with the invoice quantity for the matching line
-    - If the tool returns anything else ("BLANK", "..", "KG", etc.): skip that line, no check needed
+    - If the tool returns "BLANK" or "..": disregard UQ on entry print for this line, treat as pass (no check needed)
+    - If the tool returns "No" (Number of Pieces): compare the entry print quantity with the number of pieces on the invoice for the matching line item(s)
+    - If the tool returns any OTHER specific unit (e.g. "KG", "PR", "L", "M", etc.): check if that specific unit quantity appears on the invoice for the matching line item(s) and matches the entry print quantity. For example if UQ="KG", look for weight/kg values on the invoice line; if UQ="PR", look for pairs.
     If QUANTITY column is empty on a line: skip that line.
-    Result: set `uom_qty_result` to "1" if all UQ=No lines match, "0" if any mismatch, "" (blank) if no lines needed checking.
+    Result: set `uom_qty_result` to "1" if all lines pass (including when all are BLANK/.. — that still counts as a pass), "0" if any mismatch found.
+
+12. **CLASS Check** (use the `tariff_classification_check` tool):
+    **SKIP this check entirely if the entry print has MORE THAN 10 lines.** If skipped, leave `class_result` empty (""), `class_reasoning` to "Skipped: entry has more than 10 lines", and leave `class_line_details` empty.
+    For each line on the entry print:
+    - Call `tariff_classification_check` with the 8-digit tariff code (no dots, no stat code)
+    - The tool returns the official tariff description hierarchy (`flatten_goods`) plus chapter notes and section notes which contain important classification rules and exclusions
+    - Compare the returned description against BOTH:
+      (a) the entry print description for that line
+      (b) the invoice description for the matching item(s)
+    - Use the chapter/section notes to judge if any classification rules, exclusions, or definitions apply
+    - Be fair and reasonable:
+      * "Other" catch-all codes are acceptable if goods fit the parent category
+      * Don't be overly harsh — if goods broadly belong to that tariff heading, it's a pass
+      * Only flag clear mismatches where goods obviously don't belong under that tariff code
+    - If multiple lines share the same 8-digit tariff code, you only need to call the tool once for that code
+    Result: set `class_result` to "1" if all lines are reasonably classified, "0" if any clear mismatch found.
+
+    For `class_reasoning`: provide a brief summary (e.g. "All 5 lines reasonably classified" or "Lines 1, 10 misclassified").
+
+    For `class_line_details`: populate one entry per line on the entry print with:
+    - `line_number`: the line number from the entry print
+    - `tariff_code`: the 8-digit tariff code
+    - `official_description`: the `flatten_goods` returned by the tool
+    - `entry_print_description`: the description column from the entry print
+    - `invoice_description`: the matching description from the invoice
+    - `result`: "Reasonable" or "Mismatch"
+    - `explanation`: why the classification is or isn't reasonable
 
 **CRITICAL RULES**:
 - **NEVER fabricate information** - only extract data visible in documents
@@ -353,8 +398,8 @@ async def tariff_uq_lookup(tariff_code: str) -> str:
         tariff_code: The full tariff code (8 or 10 digits, no dots). e.g. '8483101046'.
 
     Returns:
-        The UQ value: 'No' means Number of Pieces, '..' or 'BLANK' means unspecified,
-        or other values like 'KG'/'T'. Returns 'NOT_FOUND' if tariff not in database.
+        The UQ value: 'No' means Number of Pieces, '..' or 'BLANK' means unspecified (skip check),
+        or other specific units like 'KG'/'PR'/'L'/'M'/'T' (check that unit on invoice). Returns 'NOT_FOUND' if tariff not in database.
     """
     secret = os.getenv("TARIFF_API_SECRET_TOKEN", "")
     ts = str(int(time.time()))
@@ -376,6 +421,73 @@ async def tariff_uq_lookup(tariff_code: str) -> str:
     return "NOT_FOUND"
 
 
+def _strip_html(html: str) -> str:
+    """Strip HTML tags and collapse whitespace."""
+    text = re.sub(r'<[^>]+>', ' ', html or '')
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+# Cache chapter notes by 4-digit chapter prefix to avoid duplicate API calls
+_chapter_notes_cache: Dict[str, Dict[str, str]] = {}
+
+
+async def tariff_classification_check(tariff_code: str) -> str:
+    """Look up the official tariff description and chapter/section notes for classification validation.
+
+    Args:
+        tariff_code: The 8-digit tariff code (no dots, no stat code). e.g. '84139190'.
+
+    Returns:
+        JSON with: heading, flatten_goods, rate, sanitized_goods, chapter_title, chapter_notes,
+        chapter_footnotes, section_title, section_notes. Returns error message if not found.
+    """
+    secret = os.getenv("TARIFF_API_SECRET_TOKEN", "")
+    ts = str(int(time.time()))
+    sig = hashlib.sha256(f"{secret}{ts}".encode()).hexdigest()
+    headers = {"X-Tariff-Timestamp": ts, "X-Tariff-Signature": sig}
+
+    code = re.sub(r'\D', '', tariff_code.strip())[:8]  # Take first 8 digits only
+    chapter_prefix = code[:4]
+    url = f"https://api.clear.ai/api/v1/au_tariff/tariffs/search/?code={code}&book_ref=schedule3"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code != 200:
+                return json.dumps({"error": f"Tariff {code} not found (HTTP {res.status_code})"})
+
+            data = res.json()
+
+            result: Dict[str, Any] = {
+                "tariff_code": code,
+                "heading": data.get("heading", ""),
+                "flatten_goods": data.get("flatten_goods", ""),
+                "rate": data.get("rate", ""),
+                "sanitized_goods": data.get("sanitized_goods", ""),
+            }
+
+            # Include chapter/section notes (cached by chapter prefix)
+            if chapter_prefix in _chapter_notes_cache:
+                result.update(_chapter_notes_cache[chapter_prefix])
+            else:
+                ch = data.get("chapter", {})
+                sec = ch.get("section", {})
+                notes_data = {
+                    "chapter_title": ch.get("title", ""),
+                    "chapter_notes": _strip_html(ch.get("notes", "")),
+                    "chapter_footnotes": _strip_html(ch.get("footnotes", "")),
+                    "section_title": sec.get("title", ""),
+                    "section_notes": _strip_html(sec.get("notes", "")),
+                }
+                _chapter_notes_cache[chapter_prefix] = notes_data
+                result.update(notes_data)
+
+            return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": f"Lookup failed for {code}: {str(e)}"})
+
+
 _au_audit_agent: Agent | None = None
 
 def _get_au_audit_agent() -> Agent:
@@ -393,12 +505,12 @@ def _get_au_audit_agent() -> Agent:
         # google_thinking_config={'thinking_budget': 10000}
     )
 
-    model = GoogleModel('gemini-3-pro-preview', provider=GoogleProvider(api_key=api_key))
+    model = GoogleModel('gemini-3.1-pro-preview', provider=GoogleProvider(api_key=api_key))
     _au_audit_agent = Agent(
         model=model,
         instructions=_AU_AUDIT_SYSTEM_PROMPT,
         output_type=AUAuditBatchOutput,
-        tools=[Tool(tariff_uq_lookup)],
+        tools=[Tool(tariff_uq_lookup), Tool(tariff_classification_check)],
         retries=5,
         model_settings=settings,
     )
@@ -417,8 +529,10 @@ class TokenUsage:
 
 
 async def run_au_audit(job_id: str, pdf_files: List[Path], broker_name: str = "", output_job_path: Path | None = None) -> tuple[AUAuditResult, TokenUsage]:
+    # Clear chapter notes cache per job so concurrent jobs don't share state
+    _chapter_notes_cache.clear()
     agent = _get_au_audit_agent()
-    
+
     print(f"\n{'='*80}", flush=True)
     print(f"🇦🇺 AU AUDIT - Job {job_id}", flush=True)
     print(f"{'='*80}", flush=True)
@@ -528,9 +642,9 @@ def create_csv_row(audit_result: AUAuditResult) -> Dict[str, str]:
         "OTHER": "1",
         # Line-level validations - empty but use 1 for score calculation
         "GST E": "1",
-        "CLASS": "1",
+        "CLASS": hv.class_result if hv.class_result in ("1", "0") else "",
         "CONCESSION": "1",
-        "UOM/QTY": hv.uom_qty_result if hv.uom_qty_result in ("1", "0") else "1",
+        "UOM/QTY": hv.uom_qty_result if hv.uom_qty_result in ("1", "0") else "",
     }
 
     # Score is a formula in Excel, not calculated here
@@ -569,8 +683,9 @@ def create_csv_row(audit_result: AUAuditResult) -> Dict[str, str]:
         "T & I reasoning": hv.t_i_reasoning,
         "OTH/DISC": row_scores["OTH/DISC"],
         "OTH/DISC reasoning": hv.oth_disc_reasoning,
-        # Line-level - leave empty
-        "CLASS": "",
+        # Classification check
+        "CLASS": hv.class_result if hv.class_result in ("1", "0") else "",
+        "CLASS reasoning": hv.class_reasoning,
         # Always "1" - no AI validation
         "NOTES": "1",
         # Line-level - leave empty
@@ -873,6 +988,58 @@ def write_audit_xlsx(results: List[Dict[str, str]], output_path: Path) -> Path:
     return output_path
 
 
+def write_classification_detail_xlsx(job_id: str, line_details: List[ClassificationLineDetail], output_path: Path) -> Path:
+    """Write a per-job classification detail XLSX with structured line-by-line data."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError as exc:
+        raise ImportError("openpyxl required") from exc
+
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Classification Detail"
+
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    mismatch_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+    headers = ["Line #", "Tariff Code", "Official Description", "Entry Print Description",
+               "Invoice Description", "Result", "Explanation"]
+    for col, h in enumerate(headers, 1):
+        cell = sheet.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for row_idx, detail in enumerate(line_details, 2):
+        values = [
+            detail.line_number,
+            detail.tariff_code,
+            detail.official_description,
+            detail.entry_print_description,
+            detail.invoice_description,
+            detail.result,
+            detail.explanation,
+        ]
+        for col, val in enumerate(values, 1):
+            cell = sheet.cell(row=row_idx, column=col, value=val)
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+            # Highlight mismatches in red
+            if detail.result.lower() == "mismatch":
+                cell.fill = mismatch_fill
+
+    # Column widths
+    col_widths = [8, 15, 50, 30, 30, 12, 60]
+    for col, w in enumerate(col_widths, 1):
+        sheet.column_dimensions[sheet.cell(row=1, column=col).column_letter].width = w
+
+    sheet.row_dimensions[1].height = 25
+
+    wb.save(output_path)
+    return output_path
+
+
 async def process_grouped_jobs_au(grouped_folder: Path, broker_name: str = "", resume_failed_only: bool = True) -> Dict[str, Any]:
     print(f"\n{'='*80}", flush=True)
     print("🇦🇺 AU AUDIT BATCH PROCESSING", flush=True)
@@ -926,28 +1093,24 @@ async def process_grouped_jobs_au(grouped_folder: Path, broker_name: str = "", r
     completed_markers = sum(1 for f in job_folders if (f / AUDIT_COMPLETE_MARKER).exists())
     if completed_markers > 0 and len(existing_csv_rows) < completed_markers:
         print(f"   🔧 CSV recovery: {len(existing_csv_rows)} rows in CSV but {completed_markers} completed jobs", flush=True)
-        print(f"      Scanning all run directories for individual job CSVs...", flush=True)
+        print(f"      Scanning current run directory for individual job CSVs...", flush=True)
         recovered = 0
         existing_waybills = {r.get("WAYBILL #") for r in existing_csv_rows}
-        # Scan all run directories under output for job CSVs
-        output_base = run_path.parent
-        for run_dir in sorted(output_base.iterdir()):
-            if not run_dir.is_dir():
+        # Only scan the current run path (not sibling runs which may belong to different batches)
+        for job_dir in run_path.iterdir():
+            if not job_dir.is_dir() or not job_dir.name.startswith("job_"):
                 continue
-            for job_dir in run_dir.iterdir():
-                if not job_dir.is_dir() or not job_dir.name.startswith("job_"):
-                    continue
-                for job_csv_file in job_dir.glob("au_audit_*.csv"):
-                    try:
-                        rows = _load_existing_csv_results(job_csv_file)
-                        for row in rows:
-                            wb = row.get("WAYBILL #", "")
-                            if wb and wb not in existing_waybills:
-                                append_csv_row(row, csv_path)
-                                existing_waybills.add(wb)
-                                recovered += 1
-                    except Exception:
-                        pass
+            for job_csv_file in job_dir.glob("au_audit_*.csv"):
+                try:
+                    rows = _load_existing_csv_results(job_csv_file)
+                    for row in rows:
+                        wb = row.get("WAYBILL #", "")
+                        if wb and wb not in existing_waybills:
+                            append_csv_row(row, csv_path)
+                            existing_waybills.add(wb)
+                            recovered += 1
+                except Exception:
+                    pass
         if recovered > 0:
             print(f"      ✅ Recovered {recovered} rows from previous runs", flush=True)
             existing_csv_rows = _load_existing_csv_results(csv_path)
@@ -1000,6 +1163,11 @@ async def process_grouped_jobs_au(grouped_folder: Path, broker_name: str = "", r
                         writer = csv.DictWriter(f, fieldnames=list(row.keys()))
                         writer.writeheader()
                         writer.writerow(row)
+
+                    # Write classification detail XLSX if line details exist
+                    if res.header_validation.class_line_details:
+                        detail_path = out_job / f"classification_detail_{job_id}.xlsx"
+                        write_classification_detail_xlsx(job_id, res.header_validation.class_line_details, detail_path)
 
                     # Incremental CSV append (cheap, survives restarts)
                     append_csv_row(row, csv_path)

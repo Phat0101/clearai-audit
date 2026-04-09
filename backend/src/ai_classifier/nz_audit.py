@@ -483,7 +483,7 @@ def _get_nz_audit_agent() -> Agent:
         raise EnvironmentError("GEMINI_API_KEY environment variable is required for Gemini agent")
 
     model = GoogleModel(
-        "gemini-3-pro-preview",
+        "gemini-3.1-pro-preview",
         provider=GoogleProvider(api_key=api_key),
     )
 

@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
 	"fastapi>=0.116.1",
 	"granian>=2.5.0",
-	"pydantic-ai>=1.67.0",
+	"pydantic-ai>=1.78.0",
 	"httpx>=0.28.1",
 	"pydantic>=2.12.0",
 	"python-dotenv",
@@ -21,7 +21,7 @@ dev = [
 	"httpx>=0.28.1",
 	"pytest>=8.4.1",
 	"granian[reload]>=2.5.0",
-	"pydantic-ai>=1.67.0",
+	"pydantic-ai>=1.78.0",
 	"httpx>=0.28.1",
 	"pydantic>=2.12.0",
 	"google-genai>=1.31.0",
